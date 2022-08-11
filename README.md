@@ -6,8 +6,68 @@ An implementation of the NixOS firewall (`networking.firewall` and
 Apparently iptables is "legacy", but the most immediate gain is atomic
 applications of firewall rules.
 
-This is only the generation step. It does not integrate with a NixOS
-system.
+## Usage
+
+Add this repository to your flake's inputs:
+
+```nix
+inputs.nixos-nftables.url = "github:menixator/nixos-nftables";
+```
+
+Import `nixos-nftables.nixosModules.default` into your `nixOsConfigurations`
+
+```nix
+nixosConfigurations.<hostname> = nixpkgs.lib.nixosSystem {
+  # ...
+  modules = [
+    nixos-nftables.nixosModules.default
+  ];
+}
+```
+
+## Notes and Caveats about the fork
+
+The rule generation was provided by
+[thefloweringash/nixos-nftables](https://github.com/thefloweringash/nixos-nftables).
+This fork just repackages it as a flake and straight up overrides the nixos
+firewall to use nftables.
+
+Currently, any packages that use the following properties to add custom
+commands will be seven different kinds of broken:
+  - `networking.firewall.extraCommands`
+  - `networking.firewall.extraStopCommands`
+  - `networking.nat.extraStopCommands`
+  - `networking.nat.extraCommands`
+
+The iptables rules within these properties can be translated but since anything
+that relies on the nixos `firewall` or `nat` module will assume that they will
+be in a shell script, things get a little tricky. One way would be to
+keep these in an extra bash script and run them where it is necessary, and
+translate all the iptables calls to nft. However, even this is problematic
+since `nftables` at the moment does not have the ability to remove rules
+without handles. So translation is not a silver bullet for this issue. Using a
+shell script with nft will also prevent you from taking advantage of the atomic
+nature of nft rule additions.
+
+
+
+Disclaimer: I have personally not setup any kind of testing infrastructure but
+@thefloweringash has tested rules generation quite extensively. I can't
+piggyback on @thefloweringash's testing infrastructure as qemu seems to be
+dying probably because I'm running nix in a virtualized environment.
+
+Regardless since this package overrides a pretty ubiquitous module, expect some
+scuffed behavior when installing network services.
+
+### TODO:
+ - [ ] Update inline documentation. The documentation for all the options were
+   copied from NixOS's firewall/nat module
+ - [ ] Add the ability to enable standalone natting. NixOS does this by
+   enabling a separate systemd service if firewall is disabled and natting is
+   enabled.
+ - [ ] Find a way to translate the custom commands. Eg: using `iptables-translate`
+ - [ ] Setup a way to test the rules
+
 
 ## Notes and caveats
 
