@@ -218,43 +218,21 @@ let
           ip6 daddr fe80::/64 udp dport 546 counter jump nixos-fw-accept
         ''
       }
+
+
+      counter jump nixos-fw-pre-refuse
+      ${
+      # TODO: Isnt this broken?
+        optionalString config.networking.enableIPv6 ''
+          counter jump nixos-fw-pre-refuse
+        ''
+      }
     }
   '';
 
-  firewallCfg = pkgs.writeText "rules.nft" ''
-    flush ruleset
-
-    ${flip concatMapStrings defaultConfigs (configFile: ''
-      include "${pkgs.nftables}/share/nftables/${configFile}"
-    '')}
-
-    ${add46Entity "filter" nixos-fw-accept}
-    ${add46Entity "filter" nixos-fw-refuse}
-    ${add46Entity "filter" nixos-fw-log-refuse}
-    ${optionalString (kernelHasRPFilter && (cfg.checkReversePath != false)) ''
-      ${add46Entity "raw" nixos-fw-rpfilter}
-      add rule ip raw prerouting counter jump nixos-fw-rpfilter
-      ${optionalString config.networking.enableIPv6 ''
-        add rule ip6 raw prerouting counter jump nixos-fw-rpfilter
-      ''}
-    ''}
-    ${add46Entity "filter" nixos-fw}
-
-    #{config.build.debug.nftables.extraCommands}
-    ${cfg.extraCommands}
-
-    add rule ip filter nixos-fw counter jump nixos-fw-log-refuse
-    ${optionalString config.networking.enableIPv6 ''
-      add rule ip6 filter nixos-fw counter jump nixos-fw-log-refuse
-    ''}
-
-    add rule ip filter input counter jump nixos-fw
-    ${optionalString config.networking.enableIPv6 ''
-      add rule ip6 filter input counter jump nixos-fw
-    ''}
-  '';
   canonicalizePortList = ports:
     lib.unique (builtins.sort builtins.lessThan ports);
+
   commonOptions = {
     allowedTCPPorts = mkOption {
       type = types.listOf types.port;
@@ -479,6 +457,24 @@ in {
         '';
       };
 
+      preRefuseRules = mkOption {
+        type = types.lines;
+        default = "";
+        example = "udp port 53 accept";
+        description = ''
+          Custom nft rules to be added just before the firewall decides to reject a packet
+        '';
+      };
+
+      extraRules = mkOption {
+        type = types.lines;
+        default = "";
+        example = "udp port 53 accept";
+        description = ''
+          Additional nft rules to be added to the firewall
+        '';
+      };
+
       extraCommands = mkOption {
         type = types.lines;
         default = "";
@@ -527,7 +523,24 @@ in {
 
   # FIXME: Maybe if `enable' is false, the firewall should still be
   # built but not started by default?
-  config = mkIf cfg.enable {
+  config = let
+
+  in mkIf cfg.enable {
+
+    warnings = let
+      hasReferencesToIptables = v: (builtins.match ".*iptables.*" v) != null;
+
+    in builtins.filter (warning: warning != "") [
+      (optionalString (hasReferencesToIptables cfg.extraCommands) ''
+        `networking.firewall.extraCommands' has references to `iptables'.
+        This config is using `nixos-nftables` which can lead to unexpected behavior if used together with iptables.
+      '')
+
+      (optionalString (hasReferencesToIptables cfg.extraStopCommands) ''
+        `networking.firewall.extraStopCommands' has references to `iptables'.
+        This config is using `nixos-nftables` which can lead to unexpected behavior if used together with iptables.
+      '')
+    ];
 
     networking.firewall.trustedInterfaces = [ "lo" ];
 
@@ -550,7 +563,84 @@ in {
       }
     ];
 
-    systemd.services.firewall = {
+    systemd.services.firewall = let
+      writeShScript = name: text:
+        let
+          dir = pkgs.writeScriptBin name ''
+            #! ${pkgs.runtimeShell} -e
+            ${text}
+          '';
+        in "${dir}/bin/${name}";
+      nixos-fw-pre-refuse = family: ''
+        # The "nixos-fw-pre-refuse" chain runs custom rules before jumping to the nixos-fw-log-refuse.
+
+        chain nixos-fw-pre-refuse {
+          ${cfg.preRefuseRules}
+          counter jump nixos-fw-log-refuse
+        }
+      '';
+
+      firewallCfg = pkgs.writeText "rules.nft" ''
+        # nuke the old config
+        flush ruleset
+
+        ${flip concatMapStrings defaultConfigs (configFile: ''
+          include "${pkgs.nftables}/share/nftables/${configFile}"
+        '')}
+
+        ${add46Entity "filter" nixos-fw-accept}
+        ${add46Entity "filter" nixos-fw-refuse}
+        ${add46Entity "filter" nixos-fw-log-refuse}
+        ${add46Entity "filter" nixos-fw-pre-refuse}
+        ${optionalString
+        (kernelHasRPFilter && (cfg.checkReversePath != false)) ''
+          ${add46Entity "raw" nixos-fw-rpfilter}
+          add rule ip raw prerouting counter jump nixos-fw-rpfilter
+          ${optionalString config.networking.enableIPv6 ''
+            add rule ip6 raw prerouting counter jump nixos-fw-rpfilter
+          ''}
+        ''}
+        ${add46Entity "filter" nixos-fw}
+
+        # networking.firewall.extraRules {
+
+        ${cfg.extraRules}
+
+        # } // networking.firewall.extraRules
+
+
+        add rule ip filter input counter jump nixos-fw
+        ${optionalString config.networking.enableIPv6 ''
+          add rule ip6 filter input counter jump nixos-fw
+        ''}
+      '';
+
+      startScript = writeShScript "firewall-start" ''
+        # nixos firewall start script
+        ${cfg.package}/bin/nft -f ${firewallCfg}
+
+        # networking.firewall.extraCommands
+        ${cfg.extraCommands}
+      '';
+
+      reloadScript = writeShScript "firewall-reload" ''
+        # nixos firewall reload script
+
+
+        ${cfg.package}/bin/nft -f ${firewallCfg}
+
+        # networking.firewall.extraCommands
+        ${cfg.extraCommands}
+      '';
+
+      stopScript = writeShScript "firewall-stop" ''
+        ${cfg.package}/bin/nft flush ruleset
+
+        # networking.firewall.extraStopCommands
+        ${cfg.extraStopCommands}
+      '';
+
+    in {
       description = "Firewall";
       wantedBy = [ "sysinit.target" ];
       wants = [ "network-pre.target" ];
@@ -573,9 +663,9 @@ in {
         # the @ will make the the second specified token to be passed as "argv[0]" to the
         # executed process (instead of the actual filename), followed by the
         # further arguments specified.
-        ExecStart = "${cfg.package}/bin/nft -f ${firewallCfg}";
-        ExecReload = "${cfg.package}/bin/nft -f ${firewallCfg}";
-        ExecStop = "${cfg.package}/bin/nft flush ruleset";
+        ExecStart = "@${startScript} firewall-start";
+        ExecReload = "@${reloadScript} firewall-reload";
+        ExecStop = "@${stopScript} firewall-stop";
       };
     };
 
