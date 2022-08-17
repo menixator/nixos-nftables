@@ -7,22 +7,22 @@ let
     mkOption types flip concatMapStrings optionalString concatStrings
     mapAttrsToList mapAttrs optionals;
 
+  utils = import ./utils.nix;
+
   cfg = config.networking.firewall;
 
-  # This is ordered to match iptables-save, so the diffs are smaller.
-  # Order is not important once this module is no longer an active
-  # porting job.
-  defaultConfigs = [
-    "ipv4-nat.nft"
-    "ipv4-raw.nft"
-    "ipv4-filter.nft"
-    # "ipv4-mangle.nft"
-  ] ++ optionals config.networking.enableIPv6 [
-    "ipv6-filter.nft"
-    #"ipv6-mangle.nft"
-    "ipv6-nat.nft"
-    "ipv6-raw.nft"
-  ];
+  base = pkgs.writeText "base.nft" ''
+    # Ipv4
+    #===========================================================================
+    ${utils.genIPBaseTables "ip"}
+
+    ${optionalString config.networking.enableIPv6 ''
+      # Ipv6
+      #===========================================================================
+      ${utils.genIPBaseTables "ip6"}
+
+    ''}
+  '';
 
   inherit (config.boot.kernelPackages) kernel;
 
@@ -198,6 +198,7 @@ let
       }
 
       ${
+      # TODO: ping limit
         optionalString (family == "v4") ''
           # Optionally respond to ICMPv4 pings.
           ${optionalString cfg.allowPing ''
@@ -531,6 +532,7 @@ in {
       hasReferencesToIptables = v: (builtins.match ".*iptables.*" v) != null;
 
     in builtins.filter (warning: warning != "") [
+      # TODO: warnings for ip6tables
       (optionalString (hasReferencesToIptables cfg.extraCommands) ''
         `networking.firewall.extraCommands' has references to `iptables'.
         This config is using `nixos-nftables` which can lead to unexpected behavior if used together with iptables.
@@ -584,9 +586,7 @@ in {
         # nuke the old config
         flush ruleset
 
-        ${flip concatMapStrings defaultConfigs (configFile: ''
-          include "${pkgs.nftables}/share/nftables/${configFile}"
-        '')}
+        include "${base}"
 
         ${add46Entity "filter" nixos-fw-accept}
         ${add46Entity "filter" nixos-fw-refuse}
@@ -623,14 +623,17 @@ in {
         ${cfg.extraCommands}
       '';
 
+      # TODO: Fix this
       reloadScript = writeShScript "firewall-reload" ''
-        # nixos firewall reload script
+                # nixos firewall reload script
 
 
-        ${cfg.package}/bin/nft -f ${firewallCfg}
+        	
 
-        # networking.firewall.extraCommands
-        ${cfg.extraCommands}
+                ${cfg.package}/bin/nft -f ${firewallCfg}
+
+                # networking.firewall.extraCommands
+                ${cfg.extraCommands}
       '';
 
       stopScript = writeShScript "firewall-stop" ''
