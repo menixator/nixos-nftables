@@ -139,9 +139,9 @@ let
     }
   '';
 
-  nixos-fw = family: ''
-    # The "nixos-fw" chain does the actual work.
-    chain nixos-fw {
+  nixos-fw-core = family: ''
+    # The "nixos-fw-core" chain does the actual work.
+    chain nixos-fw-core {
 
       # Accept all traffic on the trusted interfaces.
       ${
@@ -600,7 +600,7 @@ in {
             add rule ip6 raw prerouting counter jump nixos-fw-rpfilter
           ''}
         ''}
-        ${add46Entity "filter" nixos-fw}
+        ${add46Entity "filter" nixos-fw-core}
 
         # networking.firewall.extraRules {
 
@@ -609,9 +609,9 @@ in {
         # } // networking.firewall.extraRules
 
 
-        add rule ip filter input counter jump nixos-fw
+        add rule ip filter input counter jump nixos-fw-core
         ${optionalString config.networking.enableIPv6 ''
-          add rule ip6 filter input counter jump nixos-fw
+          add rule ip6 filter input counter jump nixos-fw-core
         ''}
       '';
 
