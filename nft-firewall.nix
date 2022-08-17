@@ -146,12 +146,12 @@ let
       # Accept all traffic on the trusted interfaces.
       ${
         flip concatMapStrings cfg.trustedInterfaces (iface: ''
-          iifname "${iface}" counter jump nixos-fw-accept
+          iifname "${iface}" counter jump nixos-fw-pre-accept
         '')
       }
 
       # Accept packets from established or related connections.
-      ct state established,related counter jump nixos-fw-accept
+      ct state established,related counter jump nixos-fw-pre-accept
 
       # Accept connections to the allowed TCP ports.
       ${
@@ -159,7 +159,7 @@ let
           concatMapStrings (port: ''
             ${
               optionalString (iface != "default") ''iifname "${iface}" ''
-            }tcp dport ${toString port} counter jump nixos-fw-accept
+            }tcp dport ${toString port} counter jump nixos-fw-pre-accept
           '') cfg.allowedTCPPorts) allInterfaces)
       }
 
@@ -171,7 +171,7 @@ let
             in ''
               ${
                 optionalString (iface != "default") ''iifname "${iface}" ''
-              }tcp dport ${range} counter jump nixos-fw-accept
+              }tcp dport ${range} counter jump nixos-fw-pre-accept
             '') cfg.allowedTCPPortRanges) allInterfaces)
       }
 
@@ -181,7 +181,7 @@ let
           concatMapStrings (port: ''
             ${
               optionalString (iface != "default") ''iifname "${iface}" ''
-            }udp dport ${toString port} counter jump nixos-fw-accept
+            }udp dport ${toString port} counter jump nixos-fw-pre-accept
           '') cfg.allowedUDPPorts) allInterfaces)
       }
 
@@ -193,7 +193,7 @@ let
             in ''
               ${
                 optionalString (iface != "default") ''iifname "${iface}" ''
-              }udp dport ${range} counter jump nixos-fw-accept
+              }udp dport ${range} counter jump nixos-fw-pre-accept
             '') cfg.allowedUDPPortRanges) allInterfaces)
       }
 
@@ -202,7 +202,7 @@ let
         optionalString (family == "v4") ''
           # Optionally respond to ICMPv4 pings.
           ${optionalString cfg.allowPing ''
-            icmp type echo-request counter jump nixos-fw-accept
+            icmp type echo-request counter jump nixos-fw-pre-accept
           ''}
         ''
       }
@@ -213,10 +213,10 @@ let
           # information queries (type 139).  See RFC 4890, section
           # 4.4.
           icmpv6 type nd-redirect counter drop
-          meta l4proto 58 counter jump nixos-fw-accept
+          meta l4proto 58 counter jump nixos-fw-pre-accept
 
           # Allow this host to act as a DHCPv6 client
-          ip6 daddr fe80::/64 udp dport 546 counter jump nixos-fw-accept
+          ip6 daddr fe80::/64 udp dport 546 counter jump nixos-fw-pre-accept
         ''
       }
 
@@ -467,6 +467,15 @@ in {
         '';
       };
 
+      preAcceptRules = mkOption {
+        type = types.lines;
+        default = "";
+        example = "udp port 53 accept";
+        description = ''
+          Custom nft rules to be added just before the firewall decides to accept a packet
+        '';
+      };
+
       extraRules = mkOption {
         type = types.lines;
         default = "";
@@ -573,8 +582,19 @@ in {
             ${text}
           '';
         in "${dir}/bin/${name}";
+
+      accept-fw-pre-accept = family: ''
+        # The "nixos-fw-pre-accept" chain runs user defined rules before jumping
+        # to the nixos-fw-accept chain
+        chain nixos-fw-pre-accept {
+          ${cfg.preAcceptRules}
+          counter jump nixos-fw-accept
+        }
+      '';
+
       nixos-fw-pre-refuse = family: ''
-        # The "nixos-fw-pre-refuse" chain runs custom rules before jumping to the nixos-fw-log-refuse.
+        # The "nixos-fw-pre-refuse" chain runs custom rules before jumping to
+        # the nixos-fw-log-refuse.
 
         chain nixos-fw-pre-refuse {
           ${cfg.preRefuseRules}
@@ -588,10 +608,11 @@ in {
 
         include "${base}"
 
+        ${add46Entity "filter" nixos-fw-pre-accept}
         ${add46Entity "filter" nixos-fw-accept}
-        ${add46Entity "filter" nixos-fw-refuse}
-        ${add46Entity "filter" nixos-fw-log-refuse}
         ${add46Entity "filter" nixos-fw-pre-refuse}
+        ${add46Entity "filter" nixos-fw-log-refuse}
+        ${add46Entity "filter" nixos-fw-refuse}
         ${optionalString
         (kernelHasRPFilter && (cfg.checkReversePath != false)) ''
           ${add46Entity "raw" nixos-fw-rpfilter}
@@ -625,15 +646,15 @@ in {
 
       # TODO: Fix this
       reloadScript = writeShScript "firewall-reload" ''
-                # nixos firewall reload script
+        # nixos firewall reload script
 
 
-        	
 
-                ${cfg.package}/bin/nft -f ${firewallCfg}
 
-                # networking.firewall.extraCommands
-                ${cfg.extraCommands}
+        ${cfg.package}/bin/nft -f ${firewallCfg}
+
+        # networking.firewall.extraCommands
+        ${cfg.extraCommands}
       '';
 
       stopScript = writeShScript "firewall-stop" ''
