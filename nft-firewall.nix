@@ -583,7 +583,7 @@ in {
           '';
         in "${dir}/bin/${name}";
 
-      accept-fw-pre-accept = family: ''
+      nixos-fw-pre-accept = family: ''
         # The "nixos-fw-pre-accept" chain runs user defined rules before jumping
         # to the nixos-fw-accept chain
         chain nixos-fw-pre-accept {
@@ -608,11 +608,11 @@ in {
 
         include "${base}"
 
-        ${add46Entity "filter" nixos-fw-pre-accept}
         ${add46Entity "filter" nixos-fw-accept}
-        ${add46Entity "filter" nixos-fw-pre-refuse}
-        ${add46Entity "filter" nixos-fw-log-refuse}
+        ${add46Entity "filter" nixos-fw-pre-accept}
         ${add46Entity "filter" nixos-fw-refuse}
+        ${add46Entity "filter" nixos-fw-log-refuse}
+        ${add46Entity "filter" nixos-fw-pre-refuse}
         ${optionalString
         (kernelHasRPFilter && (cfg.checkReversePath != false)) ''
           ${add46Entity "raw" nixos-fw-rpfilter}
@@ -630,9 +630,9 @@ in {
         # } // networking.firewall.extraRules
 
 
-        add rule ip filter input counter jump nixos-fw-core
+        add rule ip filter input counter jump nixos-fw-core # handle 11
         ${optionalString config.networking.enableIPv6 ''
-          add rule ip6 filter input counter jump nixos-fw-core
+          add rule ip6 filter input counter jump nixos-fw-core # handle 22
         ''}
       '';
 
