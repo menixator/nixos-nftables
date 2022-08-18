@@ -35,6 +35,17 @@ let
   };
   allInterfaces = defaultInterface // cfg.interfaces;
 
+  remove46Chain = table: chain: ''
+    flush chain ip ${table} ${chain}
+    delete chain ip ${table} ${chain}
+
+    ${optionalString config.networking.enableIPv6 ''
+      flush chain ip6 ${table} ${chain}
+      delete chain ip6 ${table} ${chain}
+
+    ''}
+  '';
+
   add46Entity = table: ent: ''
     table ip ${table} {
 
@@ -603,9 +614,6 @@ in {
       '';
 
       firewallCfg = pkgs.writeText "rules.nft" ''
-        # nuke the old config
-        flush ruleset
-
         include "${base}"
 
         ${add46Entity "filter" nixos-fw-accept}
@@ -657,8 +665,53 @@ in {
         ${cfg.extraCommands}
       '';
 
+      # assuming that prefix is a valid nft identifier there should not be a need to escape anything
+      generateNftNukeRules = prefix: ''
+        read -r -d "" FILTER <<EOF
+        .nftables[] |
+          select(
+            .rule and (.rule.chain | startswith("${prefix}") | not )
+            and (
+              .rule.expr[] | select(.jump != null and (.jump.target | startswith("${prefix}")) )
+            )
+         )
+        | [.rule.family, .rule.table, .rule.chain, .rule.handle | tostring ] | join("\t")
+        EOF
+         
+        RULES_TO_BE_REMOVED=$(sudo nft -j  list ruleset | jq  -r "$FILTER")
+        NFT_RULE_REMOVE_COMMANDS=""
+         
+        if [[ "$RULES_TO_BE_REMOVED" -ne "" && $RULES_TO_BE_REMOVED -ne $'\n' ]]; then
+          while read -r rule; do
+            while IFS=$'\t' read -r    \
+              NFT_FAMILY        \
+              NFT_TABLE         \
+              NFT_CHAIN         \
+              NFT_HANDLE        \
+              ;
+            do 
+              printf -v NFT_RULE_REMOVE_COMMANDS "$NFT_COMMANDS\ndelete rule $NFT_FAMILY $NFT_TABLE $NFT_CHAIN handle $NFT_HANDLE"
+            done <<< "$rule"
+          done <<< "$RULES_TO_BE_REMOVED"
+        fi
+
+      '';
+
       stopScript = writeShScript "firewall-stop" ''
-        ${cfg.package}/bin/nft flush ruleset
+        ${generateNftNukeRules "nixos-fw-"}
+
+        sudo nft -f - <<EOF
+        $NFT_RULE_REMOVE_COMMANDS
+
+        # the order matters here
+        ${remove46Chain "filter" "nixos-fw-core"}
+        ${remove46Chain "filter" "nixos-fw-pre-refuse"}
+        ${remove46Chain "filter" "nixos-fw-log-refuse"}
+        ${remove46Chain "filter" "nixos-fw-refuse"}
+
+        ${remove46Chain "filter" "nixos-fw-pre-accept"}
+        ${remove46Chain "filter" "nixos-fw-accept"}
+        EOF
 
         # networking.firewall.extraStopCommands
         ${cfg.extraStopCommands}
@@ -671,7 +724,7 @@ in {
       before = [ "network-pre.target" ];
       after = [ "systemd-modules-load.service" ];
 
-      path = [ cfg.package ] ++ cfg.extraPackages;
+      path = [ cfg.package ] ++ cfg.extraPackages ++ [ pkgs.jq ];
 
       # FIXME: this module may also try to load kernel modules, but
       # containers don't have CAP_SYS_MODULE.  So the host system had
