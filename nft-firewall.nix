@@ -668,6 +668,7 @@ in {
       # assuming that prefix is a valid nft identifier there should not be a need to escape anything
       generateNftNukeRules = prefix: ''
         read -r -d "" FILTER <<EOF
+        [
         .nftables[] |
           select(
             .rule and (.rule.chain | startswith("${prefix}") | not )
@@ -676,12 +677,13 @@ in {
             )
          )
         | [.rule.family, .rule.table, .rule.chain, .rule.handle | tostring ] | join("\t")
+        ] | join("\\n")
         EOF
          
-        RULES_TO_BE_REMOVED=$(sudo nft -j  list ruleset | jq  -r "$FILTER")
+        RULES_TO_BE_REMOVED=$(sudo nft -j  list ruleset | jq -r "$FILTER")
         NFT_RULE_REMOVE_COMMANDS=""
          
-        if [[ "$RULES_TO_BE_REMOVED" -ne "" && $RULES_TO_BE_REMOVED -ne $'\n' ]]; then
+        if [[ "$RULES_TO_BE_REMOVED" != "" && $RULES_TO_BE_REMOVED != $'\n' ]]; then
           while read -r rule; do
             while IFS=$'\t' read -r    \
               NFT_FAMILY        \
@@ -690,7 +692,7 @@ in {
               NFT_HANDLE        \
               ;
             do 
-              printf -v NFT_RULE_REMOVE_COMMANDS "$NFT_COMMANDS\ndelete rule $NFT_FAMILY $NFT_TABLE $NFT_CHAIN handle $NFT_HANDLE"
+              printf -v NFT_RULE_REMOVE_COMMANDS "$NTF_RULE_REMOVE_COMMANDS\ndelete rule $NFT_FAMILY $NFT_TABLE $NFT_CHAIN handle $NFT_HANDLE"
             done <<< "$rule"
           done <<< "$RULES_TO_BE_REMOVED"
         fi
