@@ -36,10 +36,14 @@ let
   allInterfaces = defaultInterface // cfg.interfaces;
 
   remove46Chain = table: chain: ''
+    # adding the chain wont cause issues if the chain exists
+    add chain ip ${table} ${chain}
     flush chain ip ${table} ${chain}
     delete chain ip ${table} ${chain}
 
     ${optionalString config.networking.enableIPv6 ''
+      # adding the chain wont cause issues if the chain exists
+      add chain ip6 ${table} ${chain}
       flush chain ip6 ${table} ${chain}
       delete chain ip6 ${table} ${chain}
 
@@ -692,7 +696,7 @@ in {
               NFT_HANDLE        \
               ;
             do 
-              printf -v NFT_RULE_REMOVE_COMMANDS "$NTF_RULE_REMOVE_COMMANDS\ndelete rule $NFT_FAMILY $NFT_TABLE $NFT_CHAIN handle $NFT_HANDLE"
+              printf -v NFT_RULE_REMOVE_COMMANDS "$NFT_RULE_REMOVE_COMMANDS\ndelete rule $NFT_FAMILY $NFT_TABLE $NFT_CHAIN handle $NFT_HANDLE"
             done <<< "$rule"
           done <<< "$RULES_TO_BE_REMOVED"
         fi
