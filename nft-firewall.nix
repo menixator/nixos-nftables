@@ -684,7 +684,7 @@ in {
         ] | join("\\n")
         EOF
          
-        RULES_TO_BE_REMOVED=$(sudo nft -j  list ruleset | jq -r "$FILTER")
+        RULES_TO_BE_REMOVED=$(nft -j  list ruleset | jq -r "$FILTER")
         NFT_RULE_REMOVE_COMMANDS=""
          
         if [[ "$RULES_TO_BE_REMOVED" != "" && $RULES_TO_BE_REMOVED != $'\n' ]]; then
@@ -706,7 +706,7 @@ in {
       stopScript = writeShScript "firewall-stop" ''
         ${generateNftNukeRules "nixos-fw-"}
 
-        sudo nft -f - <<EOF
+        nft -f - <<EOF
         $NFT_RULE_REMOVE_COMMANDS
 
         # the order matters here
