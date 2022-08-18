@@ -589,7 +589,7 @@ in {
       writeShScript = name: text:
         let
           dir = pkgs.writeScriptBin name ''
-            #! ${pkgs.runtimeShell} -e
+            #!${pkgs.runtimeShell}
             ${text}
           '';
         in "${dir}/bin/${name}";
