@@ -713,6 +713,10 @@ in {
 
         ${remove46Chain "filter" "nixos-fw-pre-accept"}
         ${remove46Chain "filter" "nixos-fw-accept"}
+        ${optionalString
+        (kernelHasRPFilter && (cfg.checkReversePath != false)) ''
+          ${remove46Chain "raw" "nixos-fw-rpfilter"}
+        ''}
         EOF
 
         # networking.firewall.extraStopCommands
