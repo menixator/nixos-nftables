@@ -2,6 +2,9 @@
 
 # TODO: implement priorityOffset
 # TODO: check if IPv6 DHCP works with rpfilter on
+# NOTE: adding enableINet means that a user can turn it on and off between config builds.
+# Which means reload has to make sure that any ip/ip6 AND inet tables are deleted.
+# TODO: priorityOffset validation
 with lib;
 
 let
@@ -51,189 +54,6 @@ let
 
       }
     ''}
-  '';
-
-  nixos-fw-accept = family: ''
-    # The "nixos-fw-accept" chain just accepts packets.
-
-    chain nixos-fw-accept {
-      counter accept
-    }
-  '';
-
-  nixos-fw-refuse = family: ''
-    # The "nixos-fw-refuse" chain rejects or drops packets.
-
-    chain nixos-fw-refuse {
-
-      ${
-        if cfg.rejectPackets then ''
-          # Send a reset for existing TCP connections that we've
-          # somehow forgotten about.  Send ICMP "port unreachable"
-          # for everything else.
-          tcp flags & (fin | syn | rst | ack) != syn counter reject with tcp reset
-          counter reject
-        '' else ''
-          counter drop
-        ''
-      }
-
-    }
-  '';
-
-  nixos-fw-log-refuse = family: ''
-    # The "nixos-fw-log-refuse" chain performs logging, then
-    # jumps to the "nixos-fw-refuse" chain.
-
-    chain nixos-fw-log-refuse {
-
-      ${
-        optionalString cfg.logRefusedConnections ''
-          tcp flags & (fin | syn | rst | ack) == syn \
-            counter log prefix "refused connection: " level info
-        ''
-      }
-
-      ${
-        optionalString (cfg.logRefusedPackets && !cfg.logRefusedUnicastsOnly) ''
-          meta pkttype broadcast counter log prefix "refused broadcast: " level info
-          meta pkttype multicast counter log prefix "refused multicast: " level info
-        ''
-      }
-
-      meta pkttype != host counter jump nixos-fw-refuse
-
-      ${
-        optionalString cfg.logRefusedPackets ''
-          counter log prefix "refused packet: " level info
-        ''
-      }
-
-      counter jump nixos-fw-refuse
-
-    }
-  '';
-
-  nixos-fw-rpfilter = family: ''
-    # Perform a reverse-path test to refuse spoofers
-    # For now, we just drop, as the raw table doesn't have a log-refuse yet
-    chain nixos-fw-rpfilter {
-      type filter hook prerouting priority raw; policy accept;
-
-      fib saddr . mark . iif oif != 0 counter return
-
-      ${
-        optionalString (family == "v4") ''
-          # Allows this host to act as a DHCP4 client without first having to use APIPA
-          udp sport 67 udp dport 68 counter return
-
-          # Allows this host to act as a DHCPv4 server
-          ip daddr 255.255.255.255 udp sport 68 udp dport 67 counter return
-        ''
-      }
-
-      ${
-        optionalString cfg.logReversePathDrops ''
-          counter log prefix "rpfilter drop: " level info
-        ''
-      }
-
-      counter drop
-    }
-  '';
-
-  nixos-fw-core = family: ''
-    # The "nixos-fw-core" chain does the actual work.
-    chain nixos-fw-core {
-      type filter hook input priority filter; policy accept;
-
-      # Accept all traffic on the trusted interfaces.
-      ${
-        flip concatMapStrings cfg.trustedInterfaces (iface: ''
-          iifname "${iface}" counter jump nixos-fw-pre-accept
-        '')
-      }
-
-      # Accept packets from established or related connections.
-      ct state established,related counter jump nixos-fw-pre-accept
-
-      # Accept connections to the allowed TCP ports.
-      ${
-        concatStrings (mapAttrsToList (iface: cfg:
-          concatMapStrings (port: ''
-            ${
-              optionalString (iface != "default") ''iifname "${iface}" ''
-            }tcp dport ${toString port} counter jump nixos-fw-pre-accept
-          '') cfg.allowedTCPPorts) allInterfaces)
-      }
-
-      # Accept connections to the allowed TCP port ranges.
-      ${
-        concatStrings (mapAttrsToList (iface: cfg:
-          concatMapStrings (rangeAttr:
-            let range = toString rangeAttr.from + "-" + toString rangeAttr.to;
-            in ''
-              ${
-                optionalString (iface != "default") ''iifname "${iface}" ''
-              }tcp dport ${range} counter jump nixos-fw-pre-accept
-            '') cfg.allowedTCPPortRanges) allInterfaces)
-      }
-
-      # Accept connections to the allowed UDP ports.
-      ${
-        concatStrings (mapAttrsToList (iface: cfg:
-          concatMapStrings (port: ''
-            ${
-              optionalString (iface != "default") ''iifname "${iface}" ''
-            }udp dport ${toString port} counter jump nixos-fw-pre-accept
-          '') cfg.allowedUDPPorts) allInterfaces)
-      }
-
-      # Accept connections to the allowed UDP port ranges.
-      ${
-        concatStrings (mapAttrsToList (iface: cfg:
-          concatMapStrings (rangeAttr:
-            let range = toString rangeAttr.from + "-" + toString rangeAttr.to;
-            in ''
-              ${
-                optionalString (iface != "default") ''iifname "${iface}" ''
-              }udp dport ${range} counter jump nixos-fw-pre-accept
-            '') cfg.allowedUDPPortRanges) allInterfaces)
-      }
-
-      ${
-      # TODO: ping limit
-        optionalString (family == "v4") ''
-          # Optionally respond to ICMPv4 pings.
-          ${optionalString cfg.allowPing ''
-            icmp type echo-request counter jump nixos-fw-pre-accept
-          ''}
-        ''
-      }
-
-      ${
-      # FIXME: why is this here and not in rpfilter? 
-        optionalString (family == "v6") ''
-          # Accept all ICMPv6 messages except redirects and node
-          # information queries (type 139).  See RFC 4890, section
-          # 4.4.
-          icmpv6 type nd-redirect counter drop
-          meta l4proto 58 counter jump nixos-fw-pre-accept
-
-          # Allow this host to act as a DHCPv6 client
-          ip6 daddr fe80::/64 udp dport 546 counter jump nixos-fw-pre-accept
-        ''
-      }
-
-
-      counter jump nixos-fw-pre-refuse
-      ${
-      # TODO: Isnt this broken?
-        optionalString config.networking.enableIPv6 ''
-          counter jump nixos-fw-pre-refuse
-        ''
-      }
-    }
   '';
 
   canonicalizePortList = ports:
@@ -490,6 +310,16 @@ in {
         '';
       };
 
+      priorityOffset = mkOption {
+        type = types.ints.s8;
+        default = 1;
+        description = ''
+          An nft priority expression which will be used for the nixos-fw-rpfilter base chain
+          You may use any nft priority expression that's valid in the `input` hook.
+          https://wiki.nftables.org/wiki-nftables/index.php/Netfilter_hooks#Priority_within_hook
+        '';
+      };
+
       extraRules = mkOption {
         type = types.lines;
         default = "";
@@ -597,6 +427,196 @@ in {
           '';
         in "${dir}/bin/${name}";
 
+      priorityOffset = if cfg.priorityOffset > 0 then
+        "+${builtins.toString cfg.priorityOffset}"
+      else
+        "-${builtins.toString cfg.priorityOffset}";
+
+      nixos-fw-accept = family: ''
+        # The "nixos-fw-accept" chain just accepts packets.
+
+        chain nixos-fw-accept {
+          counter accept
+        }
+      '';
+
+      nixos-fw-refuse = family: ''
+        # The "nixos-fw-refuse" chain rejects or drops packets.
+
+        chain nixos-fw-refuse {
+
+          ${
+            if cfg.rejectPackets then ''
+              # Send a reset for existing TCP connections that we've
+              # somehow forgotten about.  Send ICMP "port unreachable"
+              # for everything else.
+              tcp flags & (fin | syn | rst | ack) != syn counter reject with tcp reset
+              counter reject
+            '' else ''
+              counter drop
+            ''
+          }
+
+        }
+      '';
+
+      nixos-fw-log-refuse = family: ''
+        # The "nixos-fw-log-refuse" chain performs logging, then
+        # jumps to the "nixos-fw-refuse" chain.
+
+        chain nixos-fw-log-refuse {
+
+          ${
+            optionalString cfg.logRefusedConnections ''
+              tcp flags & (fin | syn | rst | ack) == syn \
+                counter log prefix "refused connection: " level info
+            ''
+          }
+
+          ${
+            optionalString
+            (cfg.logRefusedPackets && !cfg.logRefusedUnicastsOnly) ''
+              meta pkttype broadcast counter log prefix "refused broadcast: " level info
+              meta pkttype multicast counter log prefix "refused multicast: " level info
+            ''
+          }
+
+          meta pkttype != host counter jump nixos-fw-refuse
+
+          ${
+            optionalString cfg.logRefusedPackets ''
+              counter log prefix "refused packet: " level info
+            ''
+          }
+
+          counter jump nixos-fw-refuse
+
+        }
+      '';
+
+      nixos-fw-rpfilter = family: ''
+        # Perform a reverse-path test to refuse spoofers
+        # For now, we just drop, as the raw table doesn't have a log-refuse yet
+        chain nixos-fw-rpfilter {
+          type filter hook prerouting priority raw${priorityOffset}; policy accept;
+
+          fib saddr . mark . iif oif != 0 counter return
+
+          ${
+            optionalString (family == "v4") ''
+              # Allows this host to act as a DHCP4 client without first having to use APIPA
+              udp sport 67 udp dport 68 counter return
+
+              # Allows this host to act as a DHCPv4 server
+              ip daddr 255.255.255.255 udp sport 68 udp dport 67 counter return
+            ''
+          }
+
+          ${
+            optionalString cfg.logReversePathDrops ''
+              counter log prefix "rpfilter drop: " level info
+            ''
+          }
+
+          counter drop
+        }
+      '';
+
+      nixos-fw-core = family: ''
+        # The "nixos-fw-core" chain does the actual work.
+        chain nixos-fw-core {
+          type filter hook input priority filter${priorityOffset}; policy accept;
+
+          # Accept all traffic on the trusted interfaces.
+          ${
+            flip concatMapStrings cfg.trustedInterfaces (iface: ''
+              iifname "${iface}" counter jump nixos-fw-pre-accept
+            '')
+          }
+
+          # Accept packets from established or related connections.
+          ct state established,related counter jump nixos-fw-pre-accept
+
+          # Accept connections to the allowed TCP ports.
+          ${
+            concatStrings (mapAttrsToList (iface: cfg:
+              concatMapStrings (port: ''
+                ${
+                  optionalString (iface != "default") ''iifname "${iface}" ''
+                }tcp dport ${toString port} counter jump nixos-fw-pre-accept
+              '') cfg.allowedTCPPorts) allInterfaces)
+          }
+
+          # Accept connections to the allowed TCP port ranges.
+          ${
+            concatStrings (mapAttrsToList (iface: cfg:
+              concatMapStrings (rangeAttr:
+                let
+                  range = toString rangeAttr.from + "-" + toString rangeAttr.to;
+                in ''
+                  ${
+                    optionalString (iface != "default") ''iifname "${iface}" ''
+                  }tcp dport ${range} counter jump nixos-fw-pre-accept
+                '') cfg.allowedTCPPortRanges) allInterfaces)
+          }
+
+          # Accept connections to the allowed UDP ports.
+          ${
+            concatStrings (mapAttrsToList (iface: cfg:
+              concatMapStrings (port: ''
+                ${
+                  optionalString (iface != "default") ''iifname "${iface}" ''
+                }udp dport ${toString port} counter jump nixos-fw-pre-accept
+              '') cfg.allowedUDPPorts) allInterfaces)
+          }
+
+          # Accept connections to the allowed UDP port ranges.
+          ${
+            concatStrings (mapAttrsToList (iface: cfg:
+              concatMapStrings (rangeAttr:
+                let
+                  range = toString rangeAttr.from + "-" + toString rangeAttr.to;
+                in ''
+                  ${
+                    optionalString (iface != "default") ''iifname "${iface}" ''
+                  }udp dport ${range} counter jump nixos-fw-pre-accept
+                '') cfg.allowedUDPPortRanges) allInterfaces)
+          }
+
+          ${
+          # TODO: ping limit
+            optionalString (family == "v4") ''
+              # Optionally respond to ICMPv4 pings.
+              ${optionalString cfg.allowPing ''
+                icmp type echo-request counter jump nixos-fw-pre-accept
+              ''}
+            ''
+          }
+
+          ${
+          # FIXME: why is this here and not in rpfilter? 
+            optionalString (family == "v6") ''
+              # Accept all ICMPv6 messages except redirects and node
+              # information queries (type 139).  See RFC 4890, section
+              # 4.4.
+              icmpv6 type nd-redirect counter drop
+              meta l4proto 58 counter jump nixos-fw-pre-accept
+
+              # Allow this host to act as a DHCPv6 client
+              ip6 daddr fe80::/64 udp dport 546 counter jump nixos-fw-pre-accept
+            ''
+          }
+
+
+          counter jump nixos-fw-pre-refuse
+          ${
+          # TODO: Isnt this broken?
+            optionalString config.networking.enableIPv6 ''
+              counter jump nixos-fw-pre-refuse
+            ''
+          }
+        }
+      '';
       nixos-fw-pre-accept = family: ''
         # The "nixos-fw-pre-accept" chain runs user defined rules before jumping
         # to the nixos-fw-accept chain
