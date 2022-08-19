@@ -564,7 +564,7 @@ in {
               # information queries (type 139).  See RFC 4890, section
               # 4.4.
               icmpv6 type nd-redirect counter drop
-              meta l4proto 58 counter jump pre-allow
+              meta l4proto ipv6-icmp counter jump pre-allow
 
               # Allow this host to act as a DHCPv6 client
               ip6 daddr fe80::/64 udp dport 546 counter jump pre-allow
