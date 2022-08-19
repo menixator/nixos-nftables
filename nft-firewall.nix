@@ -595,11 +595,11 @@ in {
       '';
 
       firewallCfg = pkgs.writeText "rules.nft" ''
-        add table inet nixos-fw
-        flush table inet nixos-fw
-        delete table inet nixos-fw
+        add table inet nixos-firewall
+        flush table inet nixos-firewall
+        delete table inet nixos-firewall
 
-        add table inet nixos-fw {
+        add table inet nixos-firewall {
           comment "NixOS Firewall for IPv4/IPv6"
 
         # these two chains should not have dependencies
@@ -650,17 +650,17 @@ in {
         # firewall, and start dropping packets. This is to prevent any packets
         # that would have otherwise been dropped from reaching the system while
         # `extraStopCommands` are running. We do not have to do any cleanup on
-        # this as the firewall will nuke the the nixos-fw table if it exists on
+        # this as the firewall will nuke the the nixos-firewall table if it exists on
         # startup
 
         # TODO: inet support please
 
         nft -f - <<EOF
-          add table inet nixos-fw
-          flush table inet nixos-fw
-          delete table inet nixos-fw
+          add table inet nixos-firewall
+          flush table inet nixos-firewall
+          delete table inet nixos-firewall
 
-          table inet nixos-fw {
+          table inet nixos-firewall {
             chain temp {
               # TODO: 
               type filter hook input priority filter; policy accept;
@@ -687,9 +687,9 @@ in {
       stopScript = writeShScript "firewall-stop" ''
 
         nft -f - <<EOF
-          add table inet nixos-fw
-          flush table inet nixos-fw
-          delete table inet nixos-fw
+          add table inet nixos-firewall
+          flush table inet nixos-firewall
+          delete table inet nixos-firewall
         EOF
 
         # networking.firewall.extraStopCommands
