@@ -630,7 +630,7 @@ in {
 
       startScript = writeShScript "firewall-start" ''
         # nixos firewall start script
-        ${cfg.package}/bin/nft -f ${firewallCfg}
+        nft -f ${firewallCfg}
 
         # networking.firewall.extraCommands
         ${cfg.extraCommands}
