@@ -1,5 +1,7 @@
 { config, lib, pkgs, ... }:
 
+# TODO: implement priorityOffset
+# TODO: check if IPv6 DHCP works with rpfilter on
 with lib;
 
 let
@@ -7,22 +9,7 @@ let
     mkOption types flip concatMapStrings optionalString concatStrings
     mapAttrsToList mapAttrs optionals;
 
-  utils = import ./utils.nix;
-
   cfg = config.networking.firewall;
-
-  base = pkgs.writeText "base.nft" ''
-    # Ipv4
-    #===========================================================================
-    ${utils.genIPBaseTables "ip"}
-
-    ${optionalString config.networking.enableIPv6 ''
-      # Ipv6
-      #===========================================================================
-      ${utils.genIPBaseTables "ip6"}
-
-    ''}
-  '';
 
   inherit (config.boot.kernelPackages) kernel;
 
@@ -131,6 +118,7 @@ let
     # Perform a reverse-path test to refuse spoofers
     # For now, we just drop, as the raw table doesn't have a log-refuse yet
     chain nixos-fw-rpfilter {
+      type filter hook prerouting priority raw; policy accept;
 
       fib saddr . mark . iif oif != 0 counter return
 
@@ -157,6 +145,7 @@ let
   nixos-fw-core = family: ''
     # The "nixos-fw-core" chain does the actual work.
     chain nixos-fw-core {
+      type filter hook input priority filter; policy accept;
 
       # Accept all traffic on the trusted interfaces.
       ${
@@ -223,6 +212,7 @@ let
       }
 
       ${
+      # FIXME: why is this here and not in rpfilter? 
         optionalString (family == "v6") ''
           # Accept all ICMPv6 messages except redirects and node
           # information queries (type 139).  See RFC 4890, section
@@ -491,6 +481,15 @@ in {
         '';
       };
 
+      # TODO: implement using inet instead of ip/ip6 families
+      useINet = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Whether or not to use the unified inet tables which can work on both the ipv4 and ipv6 tables simultaneously
+        '';
+      };
+
       extraRules = mkOption {
         type = types.lines;
         default = "";
@@ -618,34 +617,44 @@ in {
       '';
 
       firewallCfg = pkgs.writeText "rules.nft" ''
-        include "${base}"
+        add table ip nixos-fw
+        flush table ip nixos-fw
+        delete table ip nixos-fw
 
-        ${add46Entity "filter" nixos-fw-accept}
-        ${add46Entity "filter" nixos-fw-pre-accept}
-        ${add46Entity "filter" nixos-fw-refuse}
-        ${add46Entity "filter" nixos-fw-log-refuse}
-        ${add46Entity "filter" nixos-fw-pre-refuse}
-        ${optionalString
-        (kernelHasRPFilter && (cfg.checkReversePath != false)) ''
-          ${add46Entity "raw" nixos-fw-rpfilter}
-          add rule ip raw prerouting counter jump nixos-fw-rpfilter
-          ${optionalString config.networking.enableIPv6 ''
-            add rule ip6 raw prerouting counter jump nixos-fw-rpfilter
-          ''}
-        ''}
-        ${add46Entity "filter" nixos-fw-core}
+        add table ip nixos-fw {
+          comment "NixOS Firewall for IPv4"
+        };
+
+        add table ip6 nixos-fw
+        flush table ip6 nixos-fw
+        delete table ip6 nixos-fw
+
+        add table ip6 nixos-fw { 
+          comment "NixOS Firewall for IPv6"
+        };
+
+        # these two chains should not have dependencies
+        ${add46Entity "nixos-fw" nixos-fw-accept}
+        ${add46Entity "nixos-fw" nixos-fw-refuse}
+
+        # This chain depends on nixos-fw-accept
+        ${add46Entity "nixos-fw" nixos-fw-pre-accept}
+
+        # This chain depends on nixos-fw-refuse
+        ${add46Entity "nixos-fw" nixos-fw-log-refuse}
+
+        # This chain depends on nixos-fw-refuse
+        ${add46Entity "nixos-fw" nixos-fw-pre-refuse}
+
+        ${optionalString (kernelHasRPFilter && (cfg.checkReversePath != false))
+        (add46Entity "nixos-fw" nixos-fw-rpfilter)}
+        ${add46Entity "nixos-fw" nixos-fw-core}
 
         # networking.firewall.extraRules {
 
         ${cfg.extraRules}
 
         # } // networking.firewall.extraRules
-
-
-        add rule ip filter input counter jump nixos-fw-core # handle 11
-        ${optionalString config.networking.enableIPv6 ''
-          add rule ip6 filter input counter jump nixos-fw-core # handle 22
-        ''}
       '';
 
       startScript = writeShScript "firewall-start" ''
@@ -656,71 +665,79 @@ in {
         ${cfg.extraCommands}
       '';
 
-      # TODO: Fix this
       reloadScript = writeShScript "firewall-reload" ''
         # nixos firewall reload script
 
-
-
-
-        ${cfg.package}/bin/nft -f ${firewallCfg}
-
-        # networking.firewall.extraCommands
-        ${cfg.extraCommands}
-      '';
-
-      # assuming that prefix is a valid nft identifier there should not be a need to escape anything
-      generateNftNukeRules = prefix: ''
-        read -r -d "" FILTER <<EOF
-        [
-        .nftables[] |
-          select(
-            .rule and (.rule.chain | startswith("${prefix}") | not )
-            and (
-              .rule.expr[] | select(.jump != null and (.jump.target | startswith("${prefix}")) )
-            )
-         )
-        | [.rule.family, .rule.table, .rule.chain, .rule.handle | tostring ] | join("\t")
-        ] | join("\\n")
-        EOF
-         
-        RULES_TO_BE_REMOVED=$(nft -j  list ruleset | jq -r "$FILTER")
-        NFT_RULE_REMOVE_COMMANDS=""
-         
-        if [[ "$RULES_TO_BE_REMOVED" != "" && $RULES_TO_BE_REMOVED != $'\n' ]]; then
-          while read -r rule; do
-            while IFS=$'\t' read -r    \
-              NFT_FAMILY        \
-              NFT_TABLE         \
-              NFT_CHAIN         \
-              NFT_HANDLE        \
-              ;
-            do 
-              printf -v NFT_RULE_REMOVE_COMMANDS "$NFT_RULE_REMOVE_COMMANDS\ndelete rule $NFT_FAMILY $NFT_TABLE $NFT_CHAIN handle $NFT_HANDLE"
-            done <<< "$rule"
-          done <<< "$RULES_TO_BE_REMOVED"
+        # The -c will dry run the new config and complain if there are any
+        # issues.
+        if ! nft -c -f ${firewallCfg}; then
+          echo "The Firewall config has issues. Refusing to reload"
+          exit 1
         fi
 
+        # since extraStopCommands needs to run here, we will first nuke the
+        # firewall, and start dropping packets. This is to prevent any packets
+        # that would have otherwise been dropped from reaching the system while
+        # `extraStopCommands` are running. We do not have to do any cleanup on
+        # this as the firewall will nuke the the nixos-fw table if it exists on
+        # startup
+
+        # TODO: inet support please
+
+        nft -f - <<EOF
+          add table ip nixos-fw
+          flush table ip nixos-fw
+          delete table ip nixos-fw
+
+          add table ip6 nixos-fw
+          flush table ip6 nixos-fw
+          delete table ip6 nixos-fw
+
+          ip table nixos-fw {
+            chain nixos-fw-temp {
+              type filter hook input priority filter; policy accept;
+
+              # Allow already established connections through
+              ct state established,related accept
+               
+              # Drop everything else
+              drop
+            }
+          }
+
+          ip6 table nixos-fw {
+            chain nixos-fw-temp {
+              type filter hook input priority filter; policy accept;
+
+              # Allow already established connections through
+              ct state established,related accept
+
+              # Drop everything else
+              drop
+            }
+          }
+        EOF
+
+        # networking.firewall.extraCommands
+        ${cfg.extraStopCommands}
+
+        if ! ${startScript}; then
+          echo "Failed to reload firewall... Stopping"
+          ${stopScript}
+          exit 1
+        fi
       '';
 
       stopScript = writeShScript "firewall-stop" ''
-        ${generateNftNukeRules "nixos-fw-"}
 
         nft -f - <<EOF
-        $NFT_RULE_REMOVE_COMMANDS
+          add table ip nixos-fw
+          flush table ip nixos-fw
+          delete table ip nixos-fw
 
-        # the order matters here
-        ${remove46Chain "filter" "nixos-fw-core"}
-        ${remove46Chain "filter" "nixos-fw-pre-refuse"}
-        ${remove46Chain "filter" "nixos-fw-log-refuse"}
-        ${remove46Chain "filter" "nixos-fw-refuse"}
-
-        ${remove46Chain "filter" "nixos-fw-pre-accept"}
-        ${remove46Chain "filter" "nixos-fw-accept"}
-        ${optionalString
-        (kernelHasRPFilter && (cfg.checkReversePath != false)) ''
-          ${remove46Chain "raw" "nixos-fw-rpfilter"}
-        ''}
+          add table ip6 nixos-fw
+          flush table ip6 nixos-fw
+          delete table ip6 nixos-fw
         EOF
 
         # networking.firewall.extraStopCommands
@@ -734,7 +751,7 @@ in {
       before = [ "network-pre.target" ];
       after = [ "systemd-modules-load.service" ];
 
-      path = [ cfg.package ] ++ cfg.extraPackages ++ [ pkgs.jq ];
+      path = [ cfg.package ] ++ cfg.extraPackages;
 
       # FIXME: this module may also try to load kernel modules, but
       # containers don't have CAP_SYS_MODULE.  So the host system had

@@ -4,7 +4,6 @@
   outputs = { self, nixpkgs }:
     let utils = import ./utils.nix;
     in {
-      inherit utils;
 
       nixosModules.nft-firewall = { config, pkgs, lib, modulesPath, ... }: {
         imports = [ ./nft-firewall.nix ];
