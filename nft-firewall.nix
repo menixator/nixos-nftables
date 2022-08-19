@@ -1,9 +1,6 @@
 { config, lib, pkgs, ... }:
 
-# TODO: implement priorityOffset
 # TODO: check if IPv6 DHCP works with rpfilter on
-# NOTE: adding enableINet means that a user can turn it on and off between config builds.
-# Which means reload has to make sure that any ip/ip6 AND inet tables are deleted.
 # TODO: priorityOffset validation
 with lib;
 
@@ -25,36 +22,7 @@ let
   };
   allInterfaces = defaultInterface // cfg.interfaces;
 
-  remove46Chain = table: chain: ''
-    # adding the chain wont cause issues if the chain exists
-    add chain ip ${table} ${chain}
-    flush chain ip ${table} ${chain}
-    delete chain ip ${table} ${chain}
-
-    ${optionalString config.networking.enableIPv6 ''
-      # adding the chain wont cause issues if the chain exists
-      add chain ip6 ${table} ${chain}
-      flush chain ip6 ${table} ${chain}
-      delete chain ip6 ${table} ${chain}
-
-    ''}
-  '';
-
-  add46Entity = table: ent: ''
-    table ip ${table} {
-
-    ${ent "v4"}
-
-    }
-
-    ${optionalString config.networking.enableIPv6 ''
-      table ip6 ${table} {
-
-      ${ent "v6"}
-
-      }
-    ''}
-  '';
+  optionalStringForIPv6 = optionalString config.networking.enableIPv6;
 
   canonicalizePortList = ports:
     lib.unique (builtins.sort builtins.lessThan ports);
@@ -301,15 +269,6 @@ in {
         '';
       };
 
-      # TODO: implement using inet instead of ip/ip6 families
-      useINet = mkOption {
-        type = types.bool;
-        default = true;
-        description = ''
-          Whether or not to use the unified inet tables which can work on both the ipv4 and ipv6 tables simultaneously
-        '';
-      };
-
       priorityOffset = mkOption {
         type = types.ints.s8;
         default = 1;
@@ -432,7 +391,18 @@ in {
       else
         "-${builtins.toString cfg.priorityOffset}";
 
-      allow = family: ''
+      remove46Chain = table: chain: ''
+        # adding the chain wont cause issues if the chain exists
+        add chain inet ${table} ${chain}
+        flush chain inet ${table} ${chain}
+        delete chain inet ${table} ${chain}
+      '';
+
+      addChain = chain: ''
+        ${chain}
+      '';
+
+      allow = ''
         # The "allow" chain just accepts packets.
 
         chain allow {
@@ -440,7 +410,7 @@ in {
         }
       '';
 
-      refuse = family: ''
+      refuse = ''
         # The "refuse" chain rejects or drops packets.
 
         chain refuse {
@@ -460,7 +430,7 @@ in {
         }
       '';
 
-      log-refuse = family: ''
+      log-refuse = ''
         # The "log-refuse" chain performs logging, then
         # jumps to the "refuse" chain.
 
@@ -494,7 +464,7 @@ in {
         }
       '';
 
-      rpfilter = family: ''
+      rpfilter = ''
         # Perform a reverse-path test to refuse spoofers
         # For now, we just drop, as the raw table doesn't have a log-refuse yet
         chain rpfilter {
@@ -502,15 +472,11 @@ in {
 
           fib saddr . mark . iif oif != 0 counter return
 
-          ${
-            optionalString (family == "v4") ''
-              # Allows this host to act as a DHCP4 client without first having to use APIPA
-              udp sport 67 udp dport 68 counter return
+          # Allows this host to act as a DHCP4 client without first having to use APIPA
+          udp sport 67 udp dport 68 counter return
 
-              # Allows this host to act as a DHCPv4 server
-              ip daddr 255.255.255.255 udp sport 68 udp dport 67 counter return
-            ''
-          }
+          # Allows this host to act as a DHCPv4 server
+          ip daddr 255.255.255.255 udp sport 68 udp dport 67 counter return
 
           ${
             optionalString cfg.logReversePathDrops ''
@@ -522,7 +488,7 @@ in {
         }
       '';
 
-      core = family: ''
+      core = ''
         # The "core" chain does the actual work.
         chain core {
           type filter hook input priority filter${priorityOffset}; policy accept;
@@ -585,17 +551,15 @@ in {
 
           ${
           # TODO: ping limit
-            optionalString (family == "v4") ''
-              # Optionally respond to ICMPv4 pings.
-              ${optionalString cfg.allowPing ''
-                icmp type echo-request counter jump pre-allow
-              ''}
+          # Optionally respond to ICMPv4 pings.
+            optionalString cfg.allowPing ''
+              icmp type echo-request counter jump pre-allow
             ''
           }
 
           ${
           # FIXME: why is this here and not in rpfilter? 
-            optionalString (family == "v6") ''
+            optionalStringForIPv6 ''
               # Accept all ICMPv6 messages except redirects and node
               # information queries (type 139).  See RFC 4890, section
               # 4.4.
@@ -609,15 +573,9 @@ in {
 
 
           counter jump pre-refuse
-          ${
-          # TODO: Isnt this broken?
-            optionalString config.networking.enableIPv6 ''
-              counter jump pre-refuse
-            ''
-          }
         }
       '';
-      pre-allow = family: ''
+      pre-allow = ''
         # The "pre-allow" chain runs user defined rules before jumping
         # to the allow chain
         chain pre-allow {
@@ -626,7 +584,7 @@ in {
         }
       '';
 
-      pre-refuse = family: ''
+      pre-refuse = ''
         # The "pre-refuse" chain runs custom rules before jumping to
         # the log-refuse.
 
@@ -637,38 +595,31 @@ in {
       '';
 
       firewallCfg = pkgs.writeText "rules.nft" ''
-        add table ip nixos-fw
-        flush table ip nixos-fw
-        delete table ip nixos-fw
+        add table inet nixos-fw
+        flush table inet nixos-fw
+        delete table inet nixos-fw
 
-        add table ip nixos-fw {
-          comment "NixOS Firewall for IPv4"
-        };
-
-        add table ip6 nixos-fw
-        flush table ip6 nixos-fw
-        delete table ip6 nixos-fw
-
-        add table ip6 nixos-fw { 
-          comment "NixOS Firewall for IPv6"
-        };
+        add table inet nixos-fw {
+          comment "NixOS Firewall for IPv4/IPv6"
 
         # these two chains should not have dependencies
-        ${add46Entity "nixos-fw" allow}
-        ${add46Entity "nixos-fw" refuse}
+        ${addChain allow}
+        ${addChain refuse}
 
         # This chain depends on allow
-        ${add46Entity "nixos-fw" pre-allow}
+        ${addChain pre-allow}
 
         # This chain depends on refuse
-        ${add46Entity "nixos-fw" log-refuse}
+        ${addChain log-refuse}
 
         # This chain depends on refuse
-        ${add46Entity "nixos-fw" pre-refuse}
+        ${addChain pre-refuse}
 
         ${optionalString (kernelHasRPFilter && (cfg.checkReversePath != false))
-        (add46Entity "nixos-fw" rpfilter)}
-        ${add46Entity "nixos-fw" core}
+        (addChain rpfilter)}
+        ${addChain core}
+
+        };
 
         # networking.firewall.extraRules {
 
@@ -705,33 +656,18 @@ in {
         # TODO: inet support please
 
         nft -f - <<EOF
-          add table ip nixos-fw
-          flush table ip nixos-fw
-          delete table ip nixos-fw
+          add table inet nixos-fw
+          flush table inet nixos-fw
+          delete table inet nixos-fw
 
-          add table ip6 nixos-fw
-          flush table ip6 nixos-fw
-          delete table ip6 nixos-fw
-
-          ip table nixos-fw {
+          table inet nixos-fw {
             chain temp {
+              # TODO: 
               type filter hook input priority filter; policy accept;
 
               # Allow already established connections through
               ct state established,related accept
                
-              # Drop everything else
-              drop
-            }
-          }
-
-          ip6 table nixos-fw {
-            chain temp {
-              type filter hook input priority filter; policy accept;
-
-              # Allow already established connections through
-              ct state established,related accept
-
               # Drop everything else
               drop
             }
@@ -751,13 +687,9 @@ in {
       stopScript = writeShScript "firewall-stop" ''
 
         nft -f - <<EOF
-          add table ip nixos-fw
-          flush table ip nixos-fw
-          delete table ip nixos-fw
-
-          add table ip6 nixos-fw
-          flush table ip6 nixos-fw
-          delete table ip6 nixos-fw
+          add table inet nixos-fw
+          flush table inet nixos-fw
+          delete table inet nixos-fw
         EOF
 
         # networking.firewall.extraStopCommands
