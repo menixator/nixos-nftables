@@ -314,7 +314,7 @@ in {
         type = types.ints.s8;
         default = 1;
         description = ''
-          An nft priority expression which will be used for the nixos-fw-rpfilter base chain
+          An nft priority expression which will be used for the rpfilter base chain
           You may use any nft priority expression that's valid in the `input` hook.
           https://wiki.nftables.org/wiki-nftables/index.php/Netfilter_hooks#Priority_within_hook
         '';
@@ -432,18 +432,18 @@ in {
       else
         "-${builtins.toString cfg.priorityOffset}";
 
-      nixos-fw-allow = family: ''
-        # The "nixos-fw-allow" chain just accepts packets.
+      allow = family: ''
+        # The "allow" chain just accepts packets.
 
-        chain nixos-fw-allow {
+        chain allow {
           counter accept
         }
       '';
 
-      nixos-fw-refuse = family: ''
-        # The "nixos-fw-refuse" chain rejects or drops packets.
+      refuse = family: ''
+        # The "refuse" chain rejects or drops packets.
 
-        chain nixos-fw-refuse {
+        chain refuse {
 
           ${
             if cfg.rejectPackets then ''
@@ -460,11 +460,11 @@ in {
         }
       '';
 
-      nixos-fw-log-refuse = family: ''
-        # The "nixos-fw-log-refuse" chain performs logging, then
-        # jumps to the "nixos-fw-refuse" chain.
+      log-refuse = family: ''
+        # The "log-refuse" chain performs logging, then
+        # jumps to the "refuse" chain.
 
-        chain nixos-fw-log-refuse {
+        chain log-refuse {
 
           ${
             optionalString cfg.logRefusedConnections ''
@@ -481,7 +481,7 @@ in {
             ''
           }
 
-          meta pkttype != host counter jump nixos-fw-refuse
+          meta pkttype != host counter jump refuse
 
           ${
             optionalString cfg.logRefusedPackets ''
@@ -489,15 +489,15 @@ in {
             ''
           }
 
-          counter jump nixos-fw-refuse
+          counter jump refuse
 
         }
       '';
 
-      nixos-fw-rpfilter = family: ''
+      rpfilter = family: ''
         # Perform a reverse-path test to refuse spoofers
         # For now, we just drop, as the raw table doesn't have a log-refuse yet
-        chain nixos-fw-rpfilter {
+        chain rpfilter {
           type filter hook prerouting priority raw${priorityOffset}; policy accept;
 
           fib saddr . mark . iif oif != 0 counter return
@@ -522,20 +522,20 @@ in {
         }
       '';
 
-      nixos-fw-core = family: ''
-        # The "nixos-fw-core" chain does the actual work.
-        chain nixos-fw-core {
+      core = family: ''
+        # The "core" chain does the actual work.
+        chain core {
           type filter hook input priority filter${priorityOffset}; policy accept;
 
           # Accept all traffic on the trusted interfaces.
           ${
             flip concatMapStrings cfg.trustedInterfaces (iface: ''
-              iifname "${iface}" counter jump nixos-fw-pre-allow
+              iifname "${iface}" counter jump pre-allow
             '')
           }
 
           # Accept packets from established or related connections.
-          ct state established,related counter jump nixos-fw-pre-allow
+          ct state established,related counter jump pre-allow
 
           # Accept connections to the allowed TCP ports.
           ${
@@ -543,7 +543,7 @@ in {
               concatMapStrings (port: ''
                 ${
                   optionalString (iface != "default") ''iifname "${iface}" ''
-                }tcp dport ${toString port} counter jump nixos-fw-pre-allow
+                }tcp dport ${toString port} counter jump pre-allow
               '') cfg.allowedTCPPorts) allInterfaces)
           }
 
@@ -556,7 +556,7 @@ in {
                 in ''
                   ${
                     optionalString (iface != "default") ''iifname "${iface}" ''
-                  }tcp dport ${range} counter jump nixos-fw-pre-allow
+                  }tcp dport ${range} counter jump pre-allow
                 '') cfg.allowedTCPPortRanges) allInterfaces)
           }
 
@@ -566,7 +566,7 @@ in {
               concatMapStrings (port: ''
                 ${
                   optionalString (iface != "default") ''iifname "${iface}" ''
-                }udp dport ${toString port} counter jump nixos-fw-pre-allow
+                }udp dport ${toString port} counter jump pre-allow
               '') cfg.allowedUDPPorts) allInterfaces)
           }
 
@@ -579,7 +579,7 @@ in {
                 in ''
                   ${
                     optionalString (iface != "default") ''iifname "${iface}" ''
-                  }udp dport ${range} counter jump nixos-fw-pre-allow
+                  }udp dport ${range} counter jump pre-allow
                 '') cfg.allowedUDPPortRanges) allInterfaces)
           }
 
@@ -588,7 +588,7 @@ in {
             optionalString (family == "v4") ''
               # Optionally respond to ICMPv4 pings.
               ${optionalString cfg.allowPing ''
-                icmp type echo-request counter jump nixos-fw-pre-allow
+                icmp type echo-request counter jump pre-allow
               ''}
             ''
           }
@@ -600,39 +600,39 @@ in {
               # information queries (type 139).  See RFC 4890, section
               # 4.4.
               icmpv6 type nd-redirect counter drop
-              meta l4proto 58 counter jump nixos-fw-pre-allow
+              meta l4proto 58 counter jump pre-allow
 
               # Allow this host to act as a DHCPv6 client
-              ip6 daddr fe80::/64 udp dport 546 counter jump nixos-fw-pre-allow
+              ip6 daddr fe80::/64 udp dport 546 counter jump pre-allow
             ''
           }
 
 
-          counter jump nixos-fw-pre-refuse
+          counter jump pre-refuse
           ${
           # TODO: Isnt this broken?
             optionalString config.networking.enableIPv6 ''
-              counter jump nixos-fw-pre-refuse
+              counter jump pre-refuse
             ''
           }
         }
       '';
-      nixos-fw-pre-allow = family: ''
-        # The "nixos-fw-pre-allow" chain runs user defined rules before jumping
-        # to the nixos-fw-allow chain
-        chain nixos-fw-pre-allow {
+      pre-allow = family: ''
+        # The "pre-allow" chain runs user defined rules before jumping
+        # to the allow chain
+        chain pre-allow {
           ${cfg.preAllowRules}
-          counter jump nixos-fw-allow
+          counter jump allow
         }
       '';
 
-      nixos-fw-pre-refuse = family: ''
-        # The "nixos-fw-pre-refuse" chain runs custom rules before jumping to
-        # the nixos-fw-log-refuse.
+      pre-refuse = family: ''
+        # The "pre-refuse" chain runs custom rules before jumping to
+        # the log-refuse.
 
-        chain nixos-fw-pre-refuse {
+        chain pre-refuse {
           ${cfg.preRefuseRules}
-          counter jump nixos-fw-log-refuse
+          counter jump log-refuse
         }
       '';
 
@@ -654,21 +654,21 @@ in {
         };
 
         # these two chains should not have dependencies
-        ${add46Entity "nixos-fw" nixos-fw-allow}
-        ${add46Entity "nixos-fw" nixos-fw-refuse}
+        ${add46Entity "nixos-fw" allow}
+        ${add46Entity "nixos-fw" refuse}
 
-        # This chain depends on nixos-fw-allow
-        ${add46Entity "nixos-fw" nixos-fw-pre-allow}
+        # This chain depends on allow
+        ${add46Entity "nixos-fw" pre-allow}
 
-        # This chain depends on nixos-fw-refuse
-        ${add46Entity "nixos-fw" nixos-fw-log-refuse}
+        # This chain depends on refuse
+        ${add46Entity "nixos-fw" log-refuse}
 
-        # This chain depends on nixos-fw-refuse
-        ${add46Entity "nixos-fw" nixos-fw-pre-refuse}
+        # This chain depends on refuse
+        ${add46Entity "nixos-fw" pre-refuse}
 
         ${optionalString (kernelHasRPFilter && (cfg.checkReversePath != false))
-        (add46Entity "nixos-fw" nixos-fw-rpfilter)}
-        ${add46Entity "nixos-fw" nixos-fw-core}
+        (add46Entity "nixos-fw" rpfilter)}
+        ${add46Entity "nixos-fw" core}
 
         # networking.firewall.extraRules {
 
@@ -714,7 +714,7 @@ in {
           delete table ip6 nixos-fw
 
           ip table nixos-fw {
-            chain nixos-fw-temp {
+            chain temp {
               type filter hook input priority filter; policy accept;
 
               # Allow already established connections through
@@ -726,7 +726,7 @@ in {
           }
 
           ip6 table nixos-fw {
-            chain nixos-fw-temp {
+            chain temp {
               type filter hook input priority filter; policy accept;
 
               # Allow already established connections through
