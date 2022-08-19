@@ -292,12 +292,12 @@ in {
         '';
       };
 
-      preAcceptRules = mkOption {
+      preAllowRules = mkOption {
         type = types.lines;
         default = "";
         example = "udp port 53 accept";
         description = ''
-          Custom nft rules to be added just before the firewall decides to accept a packet
+          Custom nft rules to be added just before the firewall decides to allow a packet
         '';
       };
 
@@ -432,10 +432,10 @@ in {
       else
         "-${builtins.toString cfg.priorityOffset}";
 
-      nixos-fw-accept = family: ''
-        # The "nixos-fw-accept" chain just accepts packets.
+      nixos-fw-allow = family: ''
+        # The "nixos-fw-allow" chain just accepts packets.
 
-        chain nixos-fw-accept {
+        chain nixos-fw-allow {
           counter accept
         }
       '';
@@ -530,12 +530,12 @@ in {
           # Accept all traffic on the trusted interfaces.
           ${
             flip concatMapStrings cfg.trustedInterfaces (iface: ''
-              iifname "${iface}" counter jump nixos-fw-pre-accept
+              iifname "${iface}" counter jump nixos-fw-pre-allow
             '')
           }
 
           # Accept packets from established or related connections.
-          ct state established,related counter jump nixos-fw-pre-accept
+          ct state established,related counter jump nixos-fw-pre-allow
 
           # Accept connections to the allowed TCP ports.
           ${
@@ -543,7 +543,7 @@ in {
               concatMapStrings (port: ''
                 ${
                   optionalString (iface != "default") ''iifname "${iface}" ''
-                }tcp dport ${toString port} counter jump nixos-fw-pre-accept
+                }tcp dport ${toString port} counter jump nixos-fw-pre-allow
               '') cfg.allowedTCPPorts) allInterfaces)
           }
 
@@ -556,7 +556,7 @@ in {
                 in ''
                   ${
                     optionalString (iface != "default") ''iifname "${iface}" ''
-                  }tcp dport ${range} counter jump nixos-fw-pre-accept
+                  }tcp dport ${range} counter jump nixos-fw-pre-allow
                 '') cfg.allowedTCPPortRanges) allInterfaces)
           }
 
@@ -566,7 +566,7 @@ in {
               concatMapStrings (port: ''
                 ${
                   optionalString (iface != "default") ''iifname "${iface}" ''
-                }udp dport ${toString port} counter jump nixos-fw-pre-accept
+                }udp dport ${toString port} counter jump nixos-fw-pre-allow
               '') cfg.allowedUDPPorts) allInterfaces)
           }
 
@@ -579,7 +579,7 @@ in {
                 in ''
                   ${
                     optionalString (iface != "default") ''iifname "${iface}" ''
-                  }udp dport ${range} counter jump nixos-fw-pre-accept
+                  }udp dport ${range} counter jump nixos-fw-pre-allow
                 '') cfg.allowedUDPPortRanges) allInterfaces)
           }
 
@@ -588,7 +588,7 @@ in {
             optionalString (family == "v4") ''
               # Optionally respond to ICMPv4 pings.
               ${optionalString cfg.allowPing ''
-                icmp type echo-request counter jump nixos-fw-pre-accept
+                icmp type echo-request counter jump nixos-fw-pre-allow
               ''}
             ''
           }
@@ -600,10 +600,10 @@ in {
               # information queries (type 139).  See RFC 4890, section
               # 4.4.
               icmpv6 type nd-redirect counter drop
-              meta l4proto 58 counter jump nixos-fw-pre-accept
+              meta l4proto 58 counter jump nixos-fw-pre-allow
 
               # Allow this host to act as a DHCPv6 client
-              ip6 daddr fe80::/64 udp dport 546 counter jump nixos-fw-pre-accept
+              ip6 daddr fe80::/64 udp dport 546 counter jump nixos-fw-pre-allow
             ''
           }
 
@@ -617,12 +617,12 @@ in {
           }
         }
       '';
-      nixos-fw-pre-accept = family: ''
-        # The "nixos-fw-pre-accept" chain runs user defined rules before jumping
-        # to the nixos-fw-accept chain
-        chain nixos-fw-pre-accept {
-          ${cfg.preAcceptRules}
-          counter jump nixos-fw-accept
+      nixos-fw-pre-allow = family: ''
+        # The "nixos-fw-pre-allow" chain runs user defined rules before jumping
+        # to the nixos-fw-allow chain
+        chain nixos-fw-pre-allow {
+          ${cfg.preAllowRules}
+          counter jump nixos-fw-allow
         }
       '';
 
@@ -654,11 +654,11 @@ in {
         };
 
         # these two chains should not have dependencies
-        ${add46Entity "nixos-fw" nixos-fw-accept}
+        ${add46Entity "nixos-fw" nixos-fw-allow}
         ${add46Entity "nixos-fw" nixos-fw-refuse}
 
-        # This chain depends on nixos-fw-accept
-        ${add46Entity "nixos-fw" nixos-fw-pre-accept}
+        # This chain depends on nixos-fw-allow
+        ${add46Entity "nixos-fw" nixos-fw-pre-allow}
 
         # This chain depends on nixos-fw-refuse
         ${add46Entity "nixos-fw" nixos-fw-log-refuse}
