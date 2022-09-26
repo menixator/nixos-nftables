@@ -203,83 +203,144 @@ in {
 
   config = mkIf config.networking.nat.enable {
 
-    networking.firewall.extraCommands = ''
-        table ip nat {
-          chain nixos-nat-pre {
-            # We can't match on incoming interface in POSTROUTING, so
-            # mark packets coming from the internal interfaces.
-            ${
-              concatMapStrings (iface: ''
-                iifname "${iface}" counter meta mark set 1
-              '') cfg.internalInterfaces
+    assertions = [
+      {
+        assertion = cfg.enableIPv6 -> config.networking.enableIPv6;
+        message = "networking.nat.enableIPv6 requires networking.enableIPv6";
+      }
+      {
+        assertion = (cfg.dmzHost != null) -> (cfg.externalInterface != null);
+        message =
+          "networking.nat.dmzHost requires networking.nat.externalInterface";
+      }
+      {
+        assertion = (cfg.forwardPorts != [ ])
+          -> (cfg.externalInterface != null);
+        message =
+          "networking.nat.forwardPorts requires networking.nat.externalInterface";
+      }
+    ];
+
+    boot = {
+      kernelModules = [ "nf_nat_ftp" ];
+      kernel.sysctl = {
+        "net.ipv4.conf.all.forwarding" = mkOverride 99 true;
+        "net.ipv4.conf.default.forwarding" = mkOverride 99 true;
+      } // optionalAttrs cfg.enableIPv6 {
+        # Do not prevent IPv6 autoconfiguration.
+        # See <http://strugglers.net/~andy/blog/2011/09/04/linux-ipv6-router-advertisements-and-forwarding/>.
+        "net.ipv6.conf.all.accept_ra" = mkOverride 99 2;
+        "net.ipv6.conf.default.accept_ra" = mkOverride 99 2;
+
+        # Forward IPv6 packets.
+        "net.ipv6.conf.all.forwarding" = mkOverride 99 true;
+        "net.ipv6.conf.default.forwarding" = mkOverride 99 true;
+      };
+    };
+
+    # TODO: priority offsets
+    systemd.services.nat = let
+      natStartRules = pkgs.writeText "nixos-nat-start.nft" ''
+          add table inet nixos-nat
+          flush table inet nixos-nat
+          delete table inet nixos-nat
+
+          table ip nixos-nat {
+
+            chain prerouting	{ type nat hook prerouting priority dstnat; }
+            chain input		{ type nat hook input priority 100; }
+            chain output		{ type nat hook output priority -100; }
+            chain postrouting	{ type nat hook postrouting priority srcnat; }
+
+            chain nixos-nat-pre {
+              # We can't match on incoming interface in POSTROUTING, so
+              # mark packets coming from the internal interfaces.
+              ${
+                concatMapStrings (iface: ''
+                  iifname "${iface}" counter meta mark set 1
+                '') cfg.internalInterfaces
+              }
+            }
+
+            chain nixos-nat-post {
+              # NAT the marked packets.
+              ${
+                optionalString (cfg.internalInterfaces != [ ]) ''
+                  ${oifExternal} meta mark 1 counter ${dest}
+                ''
+              }
+
+              # NAT packets coming from the internal IPs.
+              ${
+                concatMapStrings (range: ''
+                  ${oifExternal} ip saddr ${range} counter ${dest}
+                '') cfg.internalIPs
+              }
             }
           }
 
-          chain nixos-nat-post {
-            # NAT the marked packets.
-            ${
-              optionalString (cfg.internalInterfaces != [ ]) ''
-                ${oifExternal} meta mark 1 counter ${dest}
-              ''
-            }
+        # NAT from external ports to internal ports.
+        ${concatMapStrings (fwd:
+          let nftSourcePort = iptablesPortsToNftables fwd.sourcePort;
+          in ''
+            add rule ip nixos-nat nixos-nat-pre iifname "${cfg.externalInterface}" ${fwd.proto} dport ${nftSourcePort} counter dnat to ${fwd.destination}
 
-            # NAT packets coming from the internal IPs.
-            ${
-              concatMapStrings (range: ''
-                ${oifExternal} ip saddr ${range} counter ${dest}
-              '') cfg.internalIPs
-            }
-          }
-        }
+            ${concatMapStrings (loopbackip:
+              let
+                m = builtins.match "([0-9.]+):([0-9-]+)" fwd.destination;
+                destinationIP = if (m == null) then
+                  throw "bad ip:ports `${fwd.destination}'"
+                else
+                  elemAt m 0;
+                destinationPorts = if (m == null) then
+                  throw "bad ip:ports `${fwd.destination}'"
+                else
+                  elemAt m 1;
+              in ''
+                # Allow connections to ${loopbackip}:${nftSourcePort} from the host itself
+                add rule ip nixos-nat output ip daddr ${loopbackip} ${fwd.proto} dport ${nftSourcePort} counter dnat to ${fwd.destination}
 
-      # NAT from external ports to internal ports.
-      ${concatMapStrings (fwd:
-        let nftSourcePort = iptablesPortsToNftables fwd.sourcePort;
-        in ''
-          add rule ip nat nixos-nat-pre \
-            iifname "${cfg.externalInterface}" ${fwd.proto} dport ${nftSourcePort} \
-            counter dnat to ${fwd.destination}
+                # Allow connections to ${loopbackip}:${nftSourcePort} from other hosts behind NAT
+                add rule ip nixos-nat nixos-nat-pre ip daddr ${loopbackip} ${fwd.proto} dport ${nftSourcePort} counter dnat to ${fwd.destination}
 
-          ${concatMapStrings (loopbackip:
-            let
-              m = builtins.match "([0-9.]+):([0-9-]+)" fwd.destination;
-              destinationIP = if (m == null) then
-                throw "bad ip:ports `${fwd.destination}'"
-              else
-                elemAt m 0;
-              destinationPorts = if (m == null) then
-                throw "bad ip:ports `${fwd.destination}'"
-              else
-                elemAt m 1;
-            in ''
-              # Allow connections to ${loopbackip}:${nftSourcePort} from the host itself
-              add rule ip nat output \
-                ip daddr ${loopbackip} ${fwd.proto} dport ${nftSourcePort} \
-                counter dnat to ${fwd.destination}
-
-              # Allow connections to ${loopbackip}:${nftSourcePort} from other hosts behind NAT
-              add rule ip nat nixos-nat-pre \
-                ip daddr ${loopbackip} ${fwd.proto} dport ${nftSourcePort} \
-                counter dnat to ${fwd.destination}
-
-              add rule ip nat nixos-nat-post \
-                ip daddr ${destinationIP} ${fwd.proto} dport ${
+                add rule ip nixos-nat nixos-nat-post ip daddr ${destinationIP} ${fwd.proto} dport ${
                   iptablesPortsToNftables destinationPorts
-                } \
-                counter snat to ${loopbackip}
-            '') fwd.loopbackIPs}
-        '') cfg.forwardPorts}
+                } counter snat to ${loopbackip}
+              '') fwd.loopbackIPs}
+          '') cfg.forwardPorts}
 
-      ${optionalString (cfg.dmzHost != null) ''
-        add rule ip nat nixos-nat-pre \
-          iifname "${cfg.externalInterface}" \
-          counter dnat to ${cfg.dmzHost}
-      ''}
+        ${optionalString (cfg.dmzHost != null) ''
+          add rule ip nixos-nat nixos-nat-pre iifname "${cfg.externalInterface}" counter dnat to ${cfg.dmzHost}
+        ''}
 
-      # Append our chains to the nat tables
-      add rule ip nat prerouting counter jump nixos-nat-pre
-      add rule ip nat postrouting counter jump nixos-nat-post
-    '';
+        # Append our chains to the nat tables
+        add rule ip nixos-nat prerouting counter jump nixos-nat-pre
+        add rule ip nixos-nat postrouting counter jump nixos-nat-post
+      '';
+
+      natStopRules = ''
+        add table inet nixos-nat
+        flush table inet nixos-nat
+        delete table inet nixos-nat
+      '';
+
+    in {
+      description = "Network Address Translation";
+      wantedBy = [ "network.target" ];
+      after = [ "network-pre.target" "systemd-modules-load.service" ];
+      # TODO: make packages configurable
+      path = [ pkgs.nftables ];
+      unitConfig.ConditionCapability = "CAP_NET_ADMIN";
+
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+
+      script = "nft -f ${natStartRules}";
+      preStop = "nft -f ${natStopRules}";
+    };
+
   };
 
 }
