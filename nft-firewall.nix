@@ -78,9 +78,9 @@ in {
 
   # Disable the firewall module so that we don't get a multiple definition error
   disabledModules = [
-  "services/networking/firewall.nix" 
-  "services/networking/firewall-iptables.nix"
-  "services/networking/firewall-nftables.nix"
+    "services/networking/firewall.nix"
+    "services/networking/firewall-iptables.nix"
+    "services/networking/firewall-nftables.nix"
   ];
 
   ###### interface
@@ -88,6 +88,7 @@ in {
   options = {
 
     networking.firewall = {
+
       enable = mkOption {
         type = types.bool;
         default = true;
@@ -104,6 +105,24 @@ in {
         default = [ ];
         description = ''
           Definitions of any sets that can then be used within the firewall rules
+        '';
+      };
+
+      extraInputRules = mkOption {
+        type = types.lines;
+        default = "";
+        example = "";
+        description = lib.mdDoc ''
+          Ignored
+        '';
+      };
+
+      extraForwardRules = mkOption {
+        type = types.lines;
+        default = "";
+        example = "";
+        description = lib.mdDoc ''
+          Ignored
         '';
       };
 
