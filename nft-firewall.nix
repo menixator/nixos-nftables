@@ -95,6 +95,14 @@ in {
         '';
       };
 
+      sets = mkOption {
+        type = types.listOf types.string;
+        default = [ ];
+        description = ''
+          Definitions of any sets that can then be used within the firewall rules
+        '';
+      };
+
       package = mkOption {
         type = types.package;
         default = pkgs.nftables;
@@ -601,6 +609,10 @@ in {
 
         add table inet nixos-firewall {
           comment "NixOS Firewall for IPv4/IPv6"
+        ${optionalString ((builtins.length cfg.sets) > 0) ''
+                  # defined sets
+          ${builtins.concatStringsSep "\n" cfg.sets}
+        ''}
 
         # these two chains should not have dependencies
         ${addChain allow}
