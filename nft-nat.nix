@@ -27,7 +27,8 @@ let
 
 in {
 
-  disabledModules = [ "services/networking/nat.nix" ];
+  disabledModules =
+    [ "services/networking/nat.nix" "services/networking/nat-nftables.nix" ];
   ###### interface
 
   options = {

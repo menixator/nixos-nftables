@@ -77,7 +77,11 @@ let
 in {
 
   # Disable the firewall module so that we don't get a multiple definition error
-  disabledModules = [ "services/networking/firewall.nix" ];
+  disabledModules = [
+  "services/networking/firewall.nix" 
+  "services/networking/firewall-iptables.nix"
+  "services/networking/firewall-nftables.nix"
+  ];
 
   ###### interface
 
