@@ -249,7 +249,7 @@ in {
           flush table inet nixos-nat
           delete table inet nixos-nat
 
-          table ip nixos-nat {
+          table inet nixos-nat {
 
             chain prerouting	{ type nat hook prerouting priority dstnat; }
             chain input		{ type nat hook input priority 100; }
@@ -287,7 +287,7 @@ in {
         ${concatMapStrings (fwd:
           let nftSourcePort = iptablesPortsToNftables fwd.sourcePort;
           in ''
-            add rule ip nixos-nat nixos-nat-pre iifname "${cfg.externalInterface}" ${fwd.proto} dport ${nftSourcePort} counter dnat to ${fwd.destination}
+            add rule inet nixos-nat nixos-nat-pre iifname "${cfg.externalInterface}" ${fwd.proto} dport ${nftSourcePort} counter dnat to ${fwd.destination}
 
             ${concatMapStrings (loopbackip:
               let
@@ -302,24 +302,24 @@ in {
                   elemAt m 1;
               in ''
                 # Allow connections to ${loopbackip}:${nftSourcePort} from the host itself
-                add rule ip nixos-nat output ip daddr ${loopbackip} ${fwd.proto} dport ${nftSourcePort} counter dnat to ${fwd.destination}
+                add rule inet nixos-nat output ip daddr ${loopbackip} ${fwd.proto} dport ${nftSourcePort} counter dnat to ${fwd.destination}
 
                 # Allow connections to ${loopbackip}:${nftSourcePort} from other hosts behind NAT
-                add rule ip nixos-nat nixos-nat-pre ip daddr ${loopbackip} ${fwd.proto} dport ${nftSourcePort} counter dnat to ${fwd.destination}
+                add rule inet nixos-nat nixos-nat-pre ip daddr ${loopbackip} ${fwd.proto} dport ${nftSourcePort} counter dnat to ${fwd.destination}
 
-                add rule ip nixos-nat nixos-nat-post ip daddr ${destinationIP} ${fwd.proto} dport ${
+                add rule inet nixos-nat nixos-nat-post ip daddr ${destinationIP} ${fwd.proto} dport ${
                   iptablesPortsToNftables destinationPorts
                 } counter snat to ${loopbackip}
               '') fwd.loopbackIPs}
           '') cfg.forwardPorts}
 
         ${optionalString (cfg.dmzHost != null) ''
-          add rule ip nixos-nat nixos-nat-pre iifname "${cfg.externalInterface}" counter dnat to ${cfg.dmzHost}
+          add rule inet nixos-nat nixos-nat-pre iifname "${cfg.externalInterface}" counter dnat to ${cfg.dmzHost}
         ''}
 
         # Append our chains to the nat tables
-        add rule ip nixos-nat prerouting counter jump nixos-nat-pre
-        add rule ip nixos-nat postrouting counter jump nixos-nat-post
+        add rule inet nixos-nat prerouting counter jump nixos-nat-pre
+        add rule inet nixos-nat postrouting counter jump nixos-nat-post
       '';
 
       natStopRules = ''
@@ -330,11 +330,18 @@ in {
 
     in {
       description = "Network Address Translation";
-      wantedBy = [ "network.target" ];
-      after = [ "network-pre.target" "systemd-modules-load.service" ];
+      wantedBy = [ "sysinit.target" ];
+      wants = [ "network-pre.target" ];
+      before = [ "network-pre.target" ];
+      after = [ "systemd-modules-load.service" ];
+
+      # FIXME: this module may also try to load kernel modules, but
+      # containers don't have CAP_SYS_MODULE.  So the host system had
+      # better have all necessary modules already loaded.
+      unitConfig.ConditionCapability = "CAP_NET_ADMIN";
+      unitConfig.DefaultDependencies = false;
       # TODO: make packages configurable
       path = [ pkgs.nftables ];
-      unitConfig.ConditionCapability = "CAP_NET_ADMIN";
 
       serviceConfig = {
         Type = "oneshot";
