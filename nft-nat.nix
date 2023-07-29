@@ -322,7 +322,7 @@ in {
         add rule inet nixos-nat postrouting counter jump nixos-nat-post
       '';
 
-      natStopRules = ''
+      natStopRules = pkgs.writeText "nixos-nat-start.nft"  ''
         add table inet nixos-nat
         flush table inet nixos-nat
         delete table inet nixos-nat
