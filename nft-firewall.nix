@@ -549,7 +549,7 @@ in {
               concatMapStrings (port: ''
                 ${
                   optionalString (iface != "default") ''iifname "${iface}" ''
-                }tcp dport ${toString port} counter jump pre-allow comment "accept TCP requests from ports ${toString port}"
+                }tcp dport ${toString port} counter jump pre-allow comment "accept TCP requests from port ${toString port}"
               '') cfg.allowedTCPPorts) allInterfaces)
           }
 
