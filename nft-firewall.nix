@@ -460,10 +460,10 @@ in {
               # Send a reset for existing TCP connections that we've
               # somehow forgotten about.  Send ICMP "port unreachable"
               # for everything else.
-              tcp flags & (fin | syn | rst | ack) != syn counter reject with tcp reset
+              tcp flags & (fin | syn | rst | ack) != syn counter reject with tcp reset comment "send a reset for existing tcp connections that we've somehow forgotten about."
               counter reject
             '' else ''
-              counter drop
+              counter drop comment "a verdict was taken on this packet to drop it"
             ''
           }
 
@@ -513,10 +513,10 @@ in {
           fib saddr . mark . iif oif != 0 counter return
 
           # Allows this host to act as a DHCP4 client without first having to use APIPA
-          udp sport 67 udp dport 68 counter return
+          udp sport 67 udp dport 68 counter return comment "allow this host to act as a DHCPv4 client without having to rely on APIPA"
 
           # Allows this host to act as a DHCPv4 server
-          ip daddr 255.255.255.255 udp sport 68 udp dport 67 counter return
+          ip daddr 255.255.255.255 udp sport 68 udp dport 67 counter return comment "allow this host to act as a DHCPv4 server"
 
           ${
             optionalString cfg.logReversePathDrops ''
@@ -541,7 +541,7 @@ in {
           }
 
           # Accept packets from established or related connections.
-          ct state established,related counter jump pre-allow
+          ct state established,related counter jump pre-allow comment "allow already established connections through"
 
           # Accept connections to the allowed TCP ports.
           ${
@@ -549,7 +549,11 @@ in {
               concatMapStrings (port: ''
                 ${
                   optionalString (iface != "default") ''iifname "${iface}" ''
-                }tcp dport ${toString port} counter jump pre-allow comment "accept TCP requests from port ${toString port}"
+                }tcp dport ${
+                  toString port
+                } counter jump pre-allow comment "accept TCP requests from port ${
+                  toString port
+                }"
               '') cfg.allowedTCPPorts) allInterfaces)
           }
 
@@ -572,7 +576,11 @@ in {
               concatMapStrings (port: ''
                 ${
                   optionalString (iface != "default") ''iifname "${iface}" ''
-                }udp dport ${toString port} counter jump pre-allow comment "accept UDP connections on port ${toString port}"
+                }udp dport ${
+                  toString port
+                } counter jump pre-allow comment "accept UDP connections on port ${
+                  toString port
+                }"
               '') cfg.allowedUDPPorts) allInterfaces)
           }
 
@@ -610,7 +618,7 @@ in {
               # only nd-redirect gets dropped
 
               icmpv6 type nd-redirect counter drop comment "drop ICMPv6 nd-redirect"
-              
+
               meta l4proto ipv6-icmp counter jump pre-allow comment "allow all other ICMPv6 requests through"
 
               # Allow this host to act as a DHCPv6 client
