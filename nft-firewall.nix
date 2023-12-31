@@ -101,7 +101,7 @@ in {
       };
 
       sets = mkOption {
-        type = types.listOf types.string;
+        type = types.listOf types.str;
         default = [ ];
         description = ''
           Definitions of any sets that can then be used within the firewall rules
@@ -350,6 +350,15 @@ in {
           shutdown script.  These are executed just after the removal
           of the NixOS input rule, or if the service enters a failed
           state.
+        '';
+      };
+
+      defaultAllowedSet = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "";
+        description = ''
+          Name of the set to check against for connections connecting to opened ports 
         '';
       };
 
