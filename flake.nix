@@ -19,8 +19,8 @@
     # $flake#$flakeAttr.config.system.build.vm
     vms = {
       test = nixpkgs.lib.nixosSystem {
-	system = "x86_64-linux";
-        modules = [ self.nixosModules.default ./vmconfig.nix];
+        system = "x86_64-linux";
+        modules = [ self.nixosModules.default ./vmconfig.nix ];
       };
     };
   };
