@@ -8,22 +8,19 @@ applications of firewall rules.
 
 ## Usage
 
-Add this repository to your flake's inputs:
-
-```nix
-inputs.nixos-nftables.url = "github:menixator/nixos-nftables";
-```
-
 Import `nixos-nftables.nixosModules.default` into your `nixOsConfigurations`
 
 ```nix
 {
-    outputs = { ... }:
-    nixosConfigurations.<hostname> = nixpkgs.lib.nixosSystem {
-      # ...
-      modules = [
-        nixos-nftables.nixosModules.default
-      ];
+    inputs.nixos-nftables.url = "github:menixator/nixos-nftables";
+
+    outputs = { nixos-nftables, ... }: {
+        nixosConfigurations.yourHostname = nixpkgs.lib.nixosSystem {
+            # ...
+            modules = [
+                nixos-nftables.nixosModules.default
+            ];
+        }
     }
 }
 ```
