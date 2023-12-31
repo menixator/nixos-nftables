@@ -536,7 +536,7 @@ in {
           # Accept all traffic on the trusted interfaces.
           ${
             flip concatMapStrings cfg.trustedInterfaces (iface: ''
-              iifname "${iface}" counter jump pre-allow
+              iifname "${iface}" counter jump pre-allow comment "trusted interface: ${iface}"
             '')
           }
 
@@ -549,7 +549,7 @@ in {
               concatMapStrings (port: ''
                 ${
                   optionalString (iface != "default") ''iifname "${iface}" ''
-                }tcp dport ${toString port} counter jump pre-allow
+                }tcp dport ${toString port} counter jump pre-allow comment "accept TCP requests from ports ${toString port}"
               '') cfg.allowedTCPPorts) allInterfaces)
           }
 
@@ -562,7 +562,7 @@ in {
                 in ''
                   ${
                     optionalString (iface != "default") ''iifname "${iface}" ''
-                  }tcp dport ${range} counter jump pre-allow
+                  }tcp dport ${range} counter jump pre-allow comment "accept TCP requests from ports ${range}"
                 '') cfg.allowedTCPPortRanges) allInterfaces)
           }
 
@@ -572,7 +572,7 @@ in {
               concatMapStrings (port: ''
                 ${
                   optionalString (iface != "default") ''iifname "${iface}" ''
-                }udp dport ${toString port} counter jump pre-allow
+                }udp dport ${toString port} counter jump pre-allow comment "accept UDP connections on port ${toString port}"
               '') cfg.allowedUDPPorts) allInterfaces)
           }
 
@@ -585,7 +585,7 @@ in {
                 in ''
                   ${
                     optionalString (iface != "default") ''iifname "${iface}" ''
-                  }udp dport ${range} counter jump pre-allow
+                  }udp dport ${range} counter jump pre-allow comment "accept UDP requests from ports ${range}"
                 '') cfg.allowedUDPPortRanges) allInterfaces)
           }
 
@@ -593,7 +593,7 @@ in {
           # TODO: ping limit
           # Optionally respond to ICMPv4 pings.
             optionalString cfg.allowPing ''
-              icmp type echo-request counter jump pre-allow
+              icmp type echo-request counter jump pre-allow comment "respond to ICMPv4 echo-requests(pings)" 
             ''
           }
 
@@ -603,11 +603,18 @@ in {
               # Accept all ICMPv6 messages except redirects and node
               # information queries (type 139).  See RFC 4890, section
               # 4.4.
-              icmpv6 type nd-redirect counter drop
-              meta l4proto ipv6-icmp counter jump pre-allow
+              # FIXME: we're dropping this?
+
+              # FIXME: we say that we are accepting all ICMPv6 messages 
+              # redirects and node information queries are being dropped but
+              # only nd-redirect gets dropped
+
+              icmpv6 type nd-redirect counter drop comment "drop ICMPv6 nd-redirect"
+              
+              meta l4proto ipv6-icmp counter jump pre-allow comment "allow all other ICMPv6 requests through"
 
               # Allow this host to act as a DHCPv6 client
-              ip6 daddr fe80::/64 udp dport 546 counter jump pre-allow
+              ip6 daddr fe80::/64 udp dport 546 counter jump pre-allow comment "allow this host to act as a DHCPv6 client"
             ''
           }
 
