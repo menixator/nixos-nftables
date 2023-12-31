@@ -17,11 +17,14 @@ inputs.nixos-nftables.url = "github:menixator/nixos-nftables";
 Import `nixos-nftables.nixosModules.default` into your `nixOsConfigurations`
 
 ```nix
-nixosConfigurations.<hostname> = nixpkgs.lib.nixosSystem {
-  # ...
-  modules = [
-    nixos-nftables.nixosModules.default
-  ];
+{
+    outputs = { ... }:
+    nixosConfigurations.<hostname> = nixpkgs.lib.nixosSystem {
+      # ...
+      modules = [
+        nixos-nftables.nixosModules.default
+      ];
+    }
 }
 ```
 
@@ -67,6 +70,13 @@ scuffed behavior when installing network services.
    enabled.
  - [ ] Find a way to translate the custom commands. Eg: using `iptables-translate`
  - [ ] Setup a way to test the rules
+ - [ ] Distinguish which stack to open ports for (eg: Right now, if you open
+   port 22, the port gets opened on both the Ipv4 and Ipv6 stack)
+ - [ ] Distinguish which interface the user wants to open the port for. Right
+   now, it opens the port from all interfaces.
+ - [ ] Figure out a way to allow routers to use this module. Right now we are
+   not checking if the destination is ourselves.
+
 
 
 ## Notes and caveats
@@ -87,8 +97,5 @@ In `iptables` every rule implicitly has a counter, while in `nftables`
 counters are explicit. In order to match the old behavior (and
 `iptables-restore-translate`), all rules have a counter added.
 
-## TODO
 
- - [ ] Test more
- - [ ] Upstream
 
