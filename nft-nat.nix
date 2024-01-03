@@ -10,7 +10,7 @@ let
   dest = if cfg.externalIP == null then
     "masquerade"
   else
-    "snat to ${cfg.externalIP}";
+    "snat ip to ${cfg.externalIP}";
 
   oifExternal = optionalString (cfg.externalInterface != null)
     ''oifname "${cfg.externalInterface}"'';
