@@ -300,12 +300,13 @@ in {
                   throw "bad ip:ports `${fwd.destination}'"
                 else
                   elemAt m 1;
+                #FIXME: DNAT to ipv6 is broken
               in ''
                 # Allow connections to ${loopbackip}:${nftSourcePort} from the host itself
-                add rule inet nixos-nat output ip daddr ${loopbackip} ${fwd.proto} dport ${nftSourcePort} counter dnat to ${fwd.destination}
+                add rule inet nixos-nat output ip daddr ${loopbackip} ${fwd.proto} dport ${nftSourcePort} counter dnat ip to ${fwd.destination}
 
                 # Allow connections to ${loopbackip}:${nftSourcePort} from other hosts behind NAT
-                add rule inet nixos-nat nixos-nat-pre ip daddr ${loopbackip} ${fwd.proto} dport ${nftSourcePort} counter dnat to ${fwd.destination}
+                add rule inet nixos-nat nixos-nat-pre ip daddr ${loopbackip} ${fwd.proto} dport ${nftSourcePort} counter dnat ip to ${fwd.destination}
 
                 add rule inet nixos-nat nixos-nat-post ip daddr ${destinationIP} ${fwd.proto} dport ${
                   iptablesPortsToNftables destinationPorts
