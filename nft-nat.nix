@@ -310,7 +310,7 @@ in {
 
                 add rule inet nixos-nat nixos-nat-post ip daddr ${destinationIP} ${fwd.proto} dport ${
                   iptablesPortsToNftables destinationPorts
-                } counter snat to ${loopbackip}
+                } counter snat ip to ${loopbackip}
               '') fwd.loopbackIPs}
           '') cfg.forwardPorts}
 
