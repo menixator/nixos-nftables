@@ -287,7 +287,7 @@ in {
         ${concatMapStrings (fwd:
           let nftSourcePort = iptablesPortsToNftables fwd.sourcePort;
           in ''
-            add rule inet nixos-nat nixos-nat-pre iifname "${cfg.externalInterface}" ${fwd.proto} dport ${nftSourcePort} counter dnat to ${fwd.destination}
+            add rule inet nixos-nat nixos-nat-pre iifname "${cfg.externalInterface}" ${fwd.proto} dport ${nftSourcePort} counter dnat ip to ${fwd.destination}
 
             ${concatMapStrings (loopbackip:
               let
@@ -315,7 +315,7 @@ in {
           '') cfg.forwardPorts}
 
         ${optionalString (cfg.dmzHost != null) ''
-          add rule inet nixos-nat nixos-nat-pre iifname "${cfg.externalInterface}" counter dnat to ${cfg.dmzHost}
+          add rule inet nixos-nat nixos-nat-pre iifname "${cfg.externalInterface}" counter dnat ip to ${cfg.dmzHost}
         ''}
 
         # Append our chains to the nat tables
