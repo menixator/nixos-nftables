@@ -1,6 +1,6 @@
 {
   description = "Reimplementation of the NixOS firewall with nftables";
-  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-22.05";
+  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-23.11";
 
   outputs = { self, nixpkgs }: {
 
