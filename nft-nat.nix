@@ -7,10 +7,11 @@ let
 
   cfg = config.networking.nat;
 
-  dest = if cfg.externalIP == null then
-    "masquerade"
-  else
-    "snat ip to ${cfg.externalIP}";
+  dest =
+    if cfg.externalIP == null then
+      "masquerade"
+    else
+      "snat ip to ${cfg.externalIP}";
 
   oifExternal = optionalString (cfg.externalInterface != null)
     ''oifname "${cfg.externalInterface}"'';
@@ -25,7 +26,8 @@ let
       else
         "${elemAt m 0}-${elemAt m 1}";
 
-in {
+in
+{
 
   disabledModules = [
     "services/networking/nat.nix"
@@ -264,131 +266,134 @@ in {
     };
 
     # TODO: priority offsets
-    systemd.services.nat = let
-      mark =  (toString config.networking.nat.mark);
+    systemd.services.nat =
+      let
+        mark = (toString config.networking.nat.mark);
 
-      # startingPriority can be a string or a number
-      reducePriority = startingPriority: offset:
-        let signedStringify = int: 
-          if int > 0 then "+${toString int}"
-          else toString int;
-          
-        in
-        if offset == 0 then toString startingPriority else
-          if typeOf startingPriority == "string" then 
+        # startingPriority can be a string or a number
+        reducePriority = startingPriority: offset:
+          let
+            signedStringify = int:
+              if int > 0 then "+${toString int}"
+              else toString int;
+
+          in
+          if offset == 0 then toString startingPriority else
+          if typeOf startingPriority == "string" then
             "${startingPriority}${signedStringify offset}"
-            else 
-              "${ toString (startingPriority + offset)}";
-      
+          else
+            "${ toString (startingPriority + offset)}";
 
-      natStartRules = pkgs.writeText "nixos-nat-start.nft" ''
+
+        natStartRules = pkgs.writeText "nixos-nat-start.nft" ''
+            add table inet nixos-nat
+            flush table inet nixos-nat
+            delete table inet nixos-nat
+
+            table inet nixos-nat {
+
+              chain prerouting	{ type nat hook prerouting priority ${reducePriority "dstnat" cfg.priorityOffset}; }
+              chain input		{ type nat hook input priority ${reducePriority 100 cfg.priorityOffset}; }
+              chain output		{ type nat hook output priority ${reducePriority -100 cfg.priorityOffset}; }
+              chain postrouting	{ type nat hook postrouting priority ${reducePriority "srcnat" cfg.priorityOffset}; }
+
+              chain nixos-nat-pre {
+                # We can't match on incoming interface in POSTROUTING, so
+                # mark packets coming from the internal interfaces.
+                ${
+                  concatMapStrings (iface: ''
+                    iifname "${iface}" counter meta mark set ${mark}
+                  '') cfg.internalInterfaces
+                }
+              }
+
+              chain nixos-nat-post {
+                # NAT the marked packets.
+                ${
+                  optionalString (cfg.internalInterfaces != [ ]) ''
+                    ${oifExternal} meta mark ${mark} counter ${dest}
+                  ''
+                }
+
+                # NAT packets coming from the internal IPs.
+                ${
+                  concatMapStrings (range: ''
+                    ${oifExternal} ip saddr ${range} counter ${dest}
+                  '') cfg.internalIPs
+                }
+              }
+            }
+
+          # NAT from external ports to internal ports.
+          ${concatMapStrings (fwd:
+            let nftSourcePort = iptablesPortsToNftables fwd.sourcePort;
+            in ''
+              add rule inet nixos-nat nixos-nat-pre iifname "${cfg.externalInterface}" ${fwd.proto} dport ${nftSourcePort} counter dnat ip to ${fwd.destination}
+
+              ${concatMapStrings (loopbackip:
+                let
+                  m = builtins.match "([0-9.]+):([0-9-]+)" fwd.destination;
+                  destinationIP = if (m == null) then
+                    throw "bad ip:ports `${fwd.destination}'"
+                  else
+                    elemAt m 0;
+                  destinationPorts = if (m == null) then
+                    throw "bad ip:ports `${fwd.destination}'"
+                  else
+                    elemAt m 1;
+                  #FIXME: DNAT to ipv6 is broken
+                in ''
+                  # Allow connections to ${loopbackip}:${nftSourcePort} from the host itself
+                  add rule inet nixos-nat output ip daddr ${loopbackip} ${fwd.proto} dport ${nftSourcePort} counter dnat ip to ${fwd.destination}
+
+                  # Allow connections to ${loopbackip}:${nftSourcePort} from other hosts behind NAT
+                  add rule inet nixos-nat nixos-nat-pre ip daddr ${loopbackip} ${fwd.proto} dport ${nftSourcePort} counter dnat ip to ${fwd.destination}
+
+                  add rule inet nixos-nat nixos-nat-post ip daddr ${destinationIP} ${fwd.proto} dport ${
+                    iptablesPortsToNftables destinationPorts
+                  } counter snat ip to ${loopbackip}
+                '') fwd.loopbackIPs}
+            '') cfg.forwardPorts}
+
+          ${optionalString (cfg.dmzHost != null) ''
+            add rule inet nixos-nat nixos-nat-pre iifname "${cfg.externalInterface}" counter dnat ip to ${cfg.dmzHost}
+          ''}
+
+          # Append our chains to the nat tables
+          add rule inet nixos-nat prerouting counter jump nixos-nat-pre
+          add rule inet nixos-nat postrouting counter jump nixos-nat-post
+        '';
+
+        natStopRules = pkgs.writeText "nixos-nat-start.nft" ''
           add table inet nixos-nat
           flush table inet nixos-nat
           delete table inet nixos-nat
+        '';
 
-          table inet nixos-nat {
+      in
+      {
+        description = "Network Address Translation";
+        wantedBy = [ "sysinit.target" ];
+        wants = [ "network-pre.target" ];
+        before = [ "network-pre.target" ];
+        after = [ "systemd-modules-load.service" ];
 
-            chain prerouting	{ type nat hook prerouting priority ${reducePriority "dstnat" cfg.priorityOffset}; }
-            chain input		{ type nat hook input priority ${reducePriority 100 cfg.priorityOffset}; }
-            chain output		{ type nat hook output priority ${reducePriority -100 cfg.priorityOffset}; }
-            chain postrouting	{ type nat hook postrouting priority ${reducePriority "srcnat" cfg.priorityOffset}; }
+        # FIXME: this module may also try to load kernel modules, but
+        # containers don't have CAP_SYS_MODULE.  So the host system had
+        # better have all necessary modules already loaded.
+        unitConfig.ConditionCapability = "CAP_NET_ADMIN";
+        unitConfig.DefaultDependencies = false;
+        # TODO: make packages configurable
+        path = [ pkgs.nftables ];
 
-            chain nixos-nat-pre {
-              # We can't match on incoming interface in POSTROUTING, so
-              # mark packets coming from the internal interfaces.
-              ${
-                concatMapStrings (iface: ''
-                  iifname "${iface}" counter meta mark set ${mark}
-                '') cfg.internalInterfaces
-              }
-            }
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
 
-            chain nixos-nat-post {
-              # NAT the marked packets.
-              ${
-                optionalString (cfg.internalInterfaces != [ ]) ''
-                  ${oifExternal} meta mark ${mark} counter ${dest}
-                ''
-              }
-
-              # NAT packets coming from the internal IPs.
-              ${
-                concatMapStrings (range: ''
-                  ${oifExternal} ip saddr ${range} counter ${dest}
-                '') cfg.internalIPs
-              }
-            }
-          }
-
-        # NAT from external ports to internal ports.
-        ${concatMapStrings (fwd:
-          let nftSourcePort = iptablesPortsToNftables fwd.sourcePort;
-          in ''
-            add rule inet nixos-nat nixos-nat-pre iifname "${cfg.externalInterface}" ${fwd.proto} dport ${nftSourcePort} counter dnat ip to ${fwd.destination}
-
-            ${concatMapStrings (loopbackip:
-              let
-                m = builtins.match "([0-9.]+):([0-9-]+)" fwd.destination;
-                destinationIP = if (m == null) then
-                  throw "bad ip:ports `${fwd.destination}'"
-                else
-                  elemAt m 0;
-                destinationPorts = if (m == null) then
-                  throw "bad ip:ports `${fwd.destination}'"
-                else
-                  elemAt m 1;
-                #FIXME: DNAT to ipv6 is broken
-              in ''
-                # Allow connections to ${loopbackip}:${nftSourcePort} from the host itself
-                add rule inet nixos-nat output ip daddr ${loopbackip} ${fwd.proto} dport ${nftSourcePort} counter dnat ip to ${fwd.destination}
-
-                # Allow connections to ${loopbackip}:${nftSourcePort} from other hosts behind NAT
-                add rule inet nixos-nat nixos-nat-pre ip daddr ${loopbackip} ${fwd.proto} dport ${nftSourcePort} counter dnat ip to ${fwd.destination}
-
-                add rule inet nixos-nat nixos-nat-post ip daddr ${destinationIP} ${fwd.proto} dport ${
-                  iptablesPortsToNftables destinationPorts
-                } counter snat ip to ${loopbackip}
-              '') fwd.loopbackIPs}
-          '') cfg.forwardPorts}
-
-        ${optionalString (cfg.dmzHost != null) ''
-          add rule inet nixos-nat nixos-nat-pre iifname "${cfg.externalInterface}" counter dnat ip to ${cfg.dmzHost}
-        ''}
-
-        # Append our chains to the nat tables
-        add rule inet nixos-nat prerouting counter jump nixos-nat-pre
-        add rule inet nixos-nat postrouting counter jump nixos-nat-post
-      '';
-
-      natStopRules = pkgs.writeText "nixos-nat-start.nft" ''
-        add table inet nixos-nat
-        flush table inet nixos-nat
-        delete table inet nixos-nat
-      '';
-
-    in {
-      description = "Network Address Translation";
-      wantedBy = [ "sysinit.target" ];
-      wants = [ "network-pre.target" ];
-      before = [ "network-pre.target" ];
-      after = [ "systemd-modules-load.service" ];
-
-      # FIXME: this module may also try to load kernel modules, but
-      # containers don't have CAP_SYS_MODULE.  So the host system had
-      # better have all necessary modules already loaded.
-      unitConfig.ConditionCapability = "CAP_NET_ADMIN";
-      unitConfig.DefaultDependencies = false;
-      # TODO: make packages configurable
-      path = [ pkgs.nftables ];
-
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
+        script = "nft -f ${natStartRules}";
+        preStop = "nft -f ${natStopRules}";
       };
-
-      script = "nft -f ${natStartRules}";
-      preStop = "nft -f ${natStopRules}";
-    };
 
   };
 

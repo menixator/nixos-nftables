@@ -74,7 +74,8 @@ let
       '';
     };
   };
-in {
+in
+{
 
   # Disable the firewall module so that we don't get a multiple definition error
   disabledModules = [
@@ -376,374 +377,380 @@ in {
 
   # FIXME: Maybe if `enable' is false, the firewall should still be
   # built but not started by default?
-  config = let
+  config =
+    let
 
-  in mkIf cfg.enable {
+    in mkIf cfg.enable {
 
-    warnings = let
-      hasReferencesToIptables = v: (builtins.match ".*iptables.*" v) != null;
-
-    in builtins.filter (warning: warning != "") [
-      # TODO: warnings for ip6tables
-      (optionalString (hasReferencesToIptables cfg.extraCommands) ''
-        `networking.firewall.extraCommands' has references to `iptables'.
-        This config is using `nixos-nftables` which can lead to unexpected behavior if used together with iptables.
-      '')
-
-      (optionalString (hasReferencesToIptables cfg.extraStopCommands) ''
-        `networking.firewall.extraStopCommands' has references to `iptables'.
-        This config is using `nixos-nftables` which can lead to unexpected behavior if used together with iptables.
-      '')
-    ];
-
-    networking.firewall.trustedInterfaces = [ "lo" ];
-
-    environment.systemPackages = [ cfg.package ] ++ cfg.extraPackages;
-
-    # FIXME: clean up any modules that aren't required for nftables
-    boot.kernelModules = (optional cfg.autoLoadConntrackHelpers "nf_conntrack")
-      ++ map (x: "nf_conntrack_${x}") cfg.connectionTrackingModules;
-    boot.extraModprobeConfig = optionalString cfg.autoLoadConntrackHelpers ''
-      options nf_conntrack nf_conntrack_helper=1
-    '';
-
-    assertions = [
-      # This is approximately "checkReversePath -> kernelHasRPFilter",
-      # but the checkReversePath option can include non-boolean
-      # values.
-      {
-        assertion = cfg.checkReversePath == false || kernelHasRPFilter;
-        message = "This kernel does not support rpfilter";
-      }
-    ];
-
-    systemd.services.firewall = let
-      writeShScript = name: text:
+      warnings =
         let
-          dir = pkgs.writeScriptBin name ''
-            #!${pkgs.runtimeShell}
-            ${text}
+          hasReferencesToIptables = v: (builtins.match ".*iptables.*" v) != null;
+
+        in
+        builtins.filter (warning: warning != "") [
+          # TODO: warnings for ip6tables
+          (optionalString (hasReferencesToIptables cfg.extraCommands) ''
+            `networking.firewall.extraCommands' has references to `iptables'.
+            This config is using `nixos-nftables` which can lead to unexpected behavior if used together with iptables.
+          '')
+
+          (optionalString (hasReferencesToIptables cfg.extraStopCommands) ''
+            `networking.firewall.extraStopCommands' has references to `iptables'.
+            This config is using `nixos-nftables` which can lead to unexpected behavior if used together with iptables.
+          '')
+        ];
+
+      networking.firewall.trustedInterfaces = [ "lo" ];
+
+      environment.systemPackages = [ cfg.package ] ++ cfg.extraPackages;
+
+      # FIXME: clean up any modules that aren't required for nftables
+      boot.kernelModules = (optional cfg.autoLoadConntrackHelpers "nf_conntrack")
+        ++ map (x: "nf_conntrack_${x}") cfg.connectionTrackingModules;
+      boot.extraModprobeConfig = optionalString cfg.autoLoadConntrackHelpers ''
+        options nf_conntrack nf_conntrack_helper=1
+      '';
+
+      assertions = [
+        # This is approximately "checkReversePath -> kernelHasRPFilter",
+        # but the checkReversePath option can include non-boolean
+        # values.
+        {
+          assertion = cfg.checkReversePath == false || kernelHasRPFilter;
+          message = "This kernel does not support rpfilter";
+        }
+      ];
+
+      systemd.services.firewall =
+        let
+          writeShScript = name: text:
+            let
+              dir = pkgs.writeScriptBin name ''
+                #!${pkgs.runtimeShell}
+                ${text}
+              '';
+            in
+            "${dir}/bin/${name}";
+
+          priorityOffset =
+            if cfg.priorityOffset > 0 then
+              "+${builtins.toString cfg.priorityOffset}"
+            else
+              "-${builtins.toString cfg.priorityOffset}";
+
+          remove46Chain = table: chain: ''
+            # adding the chain wont cause issues if the chain exists
+            add chain inet ${table} ${chain}
+            flush chain inet ${table} ${chain}
+            delete chain inet ${table} ${chain}
           '';
-        in "${dir}/bin/${name}";
 
-      priorityOffset = if cfg.priorityOffset > 0 then
-        "+${builtins.toString cfg.priorityOffset}"
-      else
-        "-${builtins.toString cfg.priorityOffset}";
+          addChain = chain: ''
+            ${chain}
+          '';
 
-      remove46Chain = table: chain: ''
-        # adding the chain wont cause issues if the chain exists
-        add chain inet ${table} ${chain}
-        flush chain inet ${table} ${chain}
-        delete chain inet ${table} ${chain}
-      '';
+          allow = ''
+            # The "allow" chain just accepts packets.
 
-      addChain = chain: ''
-        ${chain}
-      '';
-
-      allow = ''
-        # The "allow" chain just accepts packets.
-
-        chain allow {
-          counter accept
-        }
-      '';
-
-      refuse = ''
-        # The "refuse" chain rejects or drops packets.
-
-        chain refuse {
-
-          ${
-            if cfg.rejectPackets then ''
-              # Send a reset for existing TCP connections that we've
-              # somehow forgotten about.  Send ICMP "port unreachable"
-              # for everything else.
-              tcp flags & (fin | syn | rst | ack) != syn counter reject with tcp reset comment "send a reset for existing tcp connections that we've somehow forgotten about."
-              counter reject
-            '' else ''
-              counter drop comment "a verdict was taken on this packet to drop it"
-            ''
-          }
-
-        }
-      '';
-
-      log-refuse = ''
-        # The "log-refuse" chain performs logging, then
-        # jumps to the "refuse" chain.
-
-        chain log-refuse {
-
-          ${
-            optionalString cfg.logRefusedConnections ''
-              tcp flags & (fin | syn | rst | ack) == syn \
-                counter log prefix "refused connection: " level info
-            ''
-          }
-
-          ${
-            optionalString
-            (cfg.logRefusedPackets && !cfg.logRefusedUnicastsOnly) ''
-              meta pkttype broadcast counter log prefix "refused broadcast: " level info
-              meta pkttype multicast counter log prefix "refused multicast: " level info
-            ''
-          }
-
-          meta pkttype != host counter jump refuse
-
-          ${
-            optionalString cfg.logRefusedPackets ''
-              counter log prefix "refused packet: " level info
-            ''
-          }
-
-          counter jump refuse
-
-        }
-      '';
-
-      rpfilter = ''
-        # Perform a reverse-path test to refuse spoofers
-        # For now, we just drop, as the raw table doesn't have a log-refuse yet
-        chain rpfilter {
-          type filter hook prerouting priority raw${priorityOffset}; policy accept;
-
-          fib saddr . mark . iif oif != 0 counter return
-
-          # Allows this host to act as a DHCP4 client without first having to use APIPA
-          udp sport 67 udp dport 68 counter return comment "allow this host to act as a DHCPv4 client without having to rely on APIPA"
-
-          # Allows this host to act as a DHCPv4 server
-          ip daddr 255.255.255.255 udp sport 68 udp dport 67 counter return comment "allow this host to act as a DHCPv4 server"
-
-          ${
-            optionalString cfg.logReversePathDrops ''
-              counter log prefix "rpfilter drop: " level info
-            ''
-          }
-
-          counter drop
-        }
-      '';
-
-      core = ''
-        # The "core" chain does the actual work.
-        chain core {
-          type filter hook input priority filter${priorityOffset}; policy accept;
-
-          # Accept all traffic on the trusted interfaces.
-          ${
-            flip concatMapStrings cfg.trustedInterfaces (iface: ''
-              iifname "${iface}" counter jump pre-allow comment "trusted interface: ${iface}"
-            '')
-          }
-
-          # Accept packets from established or related connections.
-          ct state established,related counter jump pre-allow comment "allow already established connections through"
-
-          # Accept connections to the allowed TCP ports.
-          ${
-            concatStrings (mapAttrsToList (iface: cfg:
-              concatMapStrings (port: ''
-                ${
-                  optionalString (iface != "default") ''iifname "${iface}" ''
-                }tcp dport ${
-                  toString port
-                } counter jump pre-allow comment "accept TCP requests from port ${
-                  toString port
-                }"
-              '') cfg.allowedTCPPorts) allInterfaces)
-          }
-
-          # Accept connections to the allowed TCP port ranges.
-          ${
-            concatStrings (mapAttrsToList (iface: cfg:
-              concatMapStrings (rangeAttr:
-                let
-                  range = toString rangeAttr.from + "-" + toString rangeAttr.to;
-                in ''
-                  ${
-                    optionalString (iface != "default") ''iifname "${iface}" ''
-                  }tcp dport ${range} counter jump pre-allow comment "accept TCP requests from ports ${range}"
-                '') cfg.allowedTCPPortRanges) allInterfaces)
-          }
-
-          # Accept connections to the allowed UDP ports.
-          ${
-            concatStrings (mapAttrsToList (iface: cfg:
-              concatMapStrings (port: ''
-                ${
-                  optionalString (iface != "default") ''iifname "${iface}" ''
-                }udp dport ${
-                  toString port
-                } counter jump pre-allow comment "accept UDP connections on port ${
-                  toString port
-                }"
-              '') cfg.allowedUDPPorts) allInterfaces)
-          }
-
-          # Accept connections to the allowed UDP port ranges.
-          ${
-            concatStrings (mapAttrsToList (iface: cfg:
-              concatMapStrings (rangeAttr:
-                let
-                  range = toString rangeAttr.from + "-" + toString rangeAttr.to;
-                in ''
-                  ${
-                    optionalString (iface != "default") ''iifname "${iface}" ''
-                  }udp dport ${range} counter jump pre-allow comment "accept UDP requests from ports ${range}"
-                '') cfg.allowedUDPPortRanges) allInterfaces)
-          }
-
-          ${
-          # TODO: ping limit
-          # Optionally respond to ICMPv4 pings.
-            optionalString cfg.allowPing ''
-              icmp type echo-request counter jump pre-allow comment "respond to ICMPv4 echo-requests(pings)" 
-            ''
-          }
-
-          ${
-          # FIXME: why is this here and not in rpfilter? 
-            optionalStringForIPv6 ''
-              # Accept all ICMPv6 messages except redirects and node
-              # information queries (type 139).  See RFC 4890, section
-              # 4.4.
-              # FIXME: we're dropping this?
-
-              # FIXME: we say that we are accepting all ICMPv6 messages 
-              # redirects and node information queries are being dropped but
-              # only nd-redirect gets dropped
-
-              icmpv6 type nd-redirect counter drop comment "drop ICMPv6 nd-redirect"
-
-              meta l4proto ipv6-icmp counter jump pre-allow comment "allow all other ICMPv6 requests through"
-
-              # Allow this host to act as a DHCPv6 client
-              ip6 daddr fe80::/64 udp dport 546 counter jump pre-allow comment "allow this host to act as a DHCPv6 client"
-            ''
-          }
-
-
-          counter jump pre-refuse
-        }
-      '';
-      pre-allow = ''
-        # The "pre-allow" chain runs user defined rules before jumping
-        # to the allow chain
-        chain pre-allow {
-          ${cfg.preAllowRules}
-          counter jump allow
-        }
-      '';
-
-      pre-refuse = ''
-        # The "pre-refuse" chain runs custom rules before jumping to
-        # the log-refuse.
-
-        chain pre-refuse {
-          ${cfg.preRefuseRules}
-          counter jump log-refuse
-        }
-      '';
-
-      firewallCfg = pkgs.writeText "rules.nft" ''
-        add table inet nixos-firewall
-        flush table inet nixos-firewall
-        delete table inet nixos-firewall
-
-        add table inet nixos-firewall {
-          comment "NixOS Firewall for IPv4/IPv6"
-        ${optionalString ((builtins.length cfg.sets) > 0) ''
-                  # defined sets
-          ${builtins.concatStringsSep "\n" cfg.sets}
-        ''}
-
-        # these two chains should not have dependencies
-        ${addChain allow}
-        ${addChain refuse}
-
-        # This chain depends on allow
-        ${addChain pre-allow}
-
-        # This chain depends on refuse
-        ${addChain log-refuse}
-
-        # This chain depends on refuse
-        ${addChain pre-refuse}
-
-        ${optionalString (kernelHasRPFilter && (cfg.checkReversePath != false))
-        (addChain rpfilter)}
-        ${addChain core}
-
-        };
-
-        # networking.firewall.extraRules {
-
-        ${cfg.extraRules}
-
-        # } // networking.firewall.extraRules
-      '';
-
-      startScript = writeShScript "firewall-start" ''
-        # nixos firewall start script
-        nft -f ${firewallCfg}
-
-        # networking.firewall.extraCommands
-        ${cfg.extraCommands}
-      '';
-
-      reloadScript = writeShScript "firewall-reload" ''
-        # nixos firewall reload script
-
-        # The -c will dry run the new config and complain if there are any
-        # issues.
-        if ! nft -c -f ${firewallCfg}; then
-          echo "The Firewall config has issues. Refusing to reload"
-          exit 1
-        fi
-
-        # since extraStopCommands needs to run here, we will first nuke the
-        # firewall, and start dropping packets. This is to prevent any packets
-        # that would have otherwise been dropped from reaching the system while
-        # `extraStopCommands` are running. We do not have to do any cleanup on
-        # this as the firewall will nuke the the nixos-firewall table if it exists on
-        # startup
-
-        # TODO: inet support please
-
-        nft -f - <<EOF
-          add table inet nixos-firewall
-          flush table inet nixos-firewall
-          delete table inet nixos-firewall
-
-          table inet nixos-firewall {
-            chain temp {
-              # TODO: 
-              type filter hook input priority filter; policy accept;
-
-              # Allow already established connections through
-              ct state established,related accept
-               
-              # Drop everything else
-              drop
+            chain allow {
+              counter accept
             }
-          }
-        EOF
+          '';
 
-        # networking.firewall.extraCommands
-        ${cfg.extraStopCommands}
+          refuse = ''
+            # The "refuse" chain rejects or drops packets.
 
-        if ! ${startScript}; then
-          echo "Failed to reload firewall... Stopping"
-          ${stopScript}
-          exit 1
-        fi
-      '';
+            chain refuse {
 
-      stopScript = writeShScript "firewall-stop" ''
+              ${
+                if cfg.rejectPackets then ''
+                  # Send a reset for existing TCP connections that we've
+                  # somehow forgotten about.  Send ICMP "port unreachable"
+                  # for everything else.
+                  tcp flags & (fin | syn | rst | ack) != syn counter reject with tcp reset comment "send a reset for existing tcp connections that we've somehow forgotten about."
+                  counter reject
+                '' else ''
+                  counter drop comment "a verdict was taken on this packet to drop it"
+                ''
+              }
+
+            }
+          '';
+
+          log-refuse = ''
+            # The "log-refuse" chain performs logging, then
+            # jumps to the "refuse" chain.
+
+            chain log-refuse {
+
+              ${
+                optionalString cfg.logRefusedConnections ''
+                  tcp flags & (fin | syn | rst | ack) == syn \
+                    counter log prefix "refused connection: " level info
+                ''
+              }
+
+              ${
+                optionalString
+                (cfg.logRefusedPackets && !cfg.logRefusedUnicastsOnly) ''
+                  meta pkttype broadcast counter log prefix "refused broadcast: " level info
+                  meta pkttype multicast counter log prefix "refused multicast: " level info
+                ''
+              }
+
+              meta pkttype != host counter jump refuse
+
+              ${
+                optionalString cfg.logRefusedPackets ''
+                  counter log prefix "refused packet: " level info
+                ''
+              }
+
+              counter jump refuse
+
+            }
+          '';
+
+          rpfilter = ''
+            # Perform a reverse-path test to refuse spoofers
+            # For now, we just drop, as the raw table doesn't have a log-refuse yet
+            chain rpfilter {
+              type filter hook prerouting priority raw${priorityOffset}; policy accept;
+
+              fib saddr . mark . iif oif != 0 counter return
+
+              # Allows this host to act as a DHCP4 client without first having to use APIPA
+              udp sport 67 udp dport 68 counter return comment "allow this host to act as a DHCPv4 client without having to rely on APIPA"
+
+              # Allows this host to act as a DHCPv4 server
+              ip daddr 255.255.255.255 udp sport 68 udp dport 67 counter return comment "allow this host to act as a DHCPv4 server"
+
+              ${
+                optionalString cfg.logReversePathDrops ''
+                  counter log prefix "rpfilter drop: " level info
+                ''
+              }
+
+              counter drop
+            }
+          '';
+
+          core = ''
+            # The "core" chain does the actual work.
+            chain core {
+              type filter hook input priority filter${priorityOffset}; policy accept;
+
+              # Accept all traffic on the trusted interfaces.
+              ${
+                flip concatMapStrings cfg.trustedInterfaces (iface: ''
+                  iifname "${iface}" counter jump pre-allow comment "trusted interface: ${iface}"
+                '')
+              }
+
+              # Accept packets from established or related connections.
+              ct state established,related counter jump pre-allow comment "allow already established connections through"
+
+              # Accept connections to the allowed TCP ports.
+              ${
+                concatStrings (mapAttrsToList (iface: cfg:
+                  concatMapStrings (port: ''
+                    ${
+                      optionalString (iface != "default") ''iifname "${iface}" ''
+                    }tcp dport ${
+                      toString port
+                    } counter jump pre-allow comment "accept TCP requests from port ${
+                      toString port
+                    }"
+                  '') cfg.allowedTCPPorts) allInterfaces)
+              }
+
+              # Accept connections to the allowed TCP port ranges.
+              ${
+                concatStrings (mapAttrsToList (iface: cfg:
+                  concatMapStrings (rangeAttr:
+                    let
+                      range = toString rangeAttr.from + "-" + toString rangeAttr.to;
+                    in ''
+                      ${
+                        optionalString (iface != "default") ''iifname "${iface}" ''
+                      }tcp dport ${range} counter jump pre-allow comment "accept TCP requests from ports ${range}"
+                    '') cfg.allowedTCPPortRanges) allInterfaces)
+              }
+
+              # Accept connections to the allowed UDP ports.
+              ${
+                concatStrings (mapAttrsToList (iface: cfg:
+                  concatMapStrings (port: ''
+                    ${
+                      optionalString (iface != "default") ''iifname "${iface}" ''
+                    }udp dport ${
+                      toString port
+                    } counter jump pre-allow comment "accept UDP connections on port ${
+                      toString port
+                    }"
+                  '') cfg.allowedUDPPorts) allInterfaces)
+              }
+
+              # Accept connections to the allowed UDP port ranges.
+              ${
+                concatStrings (mapAttrsToList (iface: cfg:
+                  concatMapStrings (rangeAttr:
+                    let
+                      range = toString rangeAttr.from + "-" + toString rangeAttr.to;
+                    in ''
+                      ${
+                        optionalString (iface != "default") ''iifname "${iface}" ''
+                      }udp dport ${range} counter jump pre-allow comment "accept UDP requests from ports ${range}"
+                    '') cfg.allowedUDPPortRanges) allInterfaces)
+              }
+
+              ${
+              # TODO: ping limit
+              # Optionally respond to ICMPv4 pings.
+                optionalString cfg.allowPing ''
+                  icmp type echo-request counter jump pre-allow comment "respond to ICMPv4 echo-requests(pings)" 
+                ''
+              }
+
+              ${
+              # FIXME: why is this here and not in rpfilter? 
+                optionalStringForIPv6 ''
+                  # Accept all ICMPv6 messages except redirects and node
+                  # information queries (type 139).  See RFC 4890, section
+                  # 4.4.
+                  # FIXME: we're dropping this?
+
+                  # FIXME: we say that we are accepting all ICMPv6 messages 
+                  # redirects and node information queries are being dropped but
+                  # only nd-redirect gets dropped
+
+                  icmpv6 type nd-redirect counter drop comment "drop ICMPv6 nd-redirect"
+
+                  meta l4proto ipv6-icmp counter jump pre-allow comment "allow all other ICMPv6 requests through"
+
+                  # Allow this host to act as a DHCPv6 client
+                  ip6 daddr fe80::/64 udp dport 546 counter jump pre-allow comment "allow this host to act as a DHCPv6 client"
+                ''
+              }
+
+
+              counter jump pre-refuse
+            }
+          '';
+          pre-allow = ''
+            # The "pre-allow" chain runs user defined rules before jumping
+            # to the allow chain
+            chain pre-allow {
+              ${cfg.preAllowRules}
+              counter jump allow
+            }
+          '';
+
+          pre-refuse = ''
+            # The "pre-refuse" chain runs custom rules before jumping to
+            # the log-refuse.
+
+            chain pre-refuse {
+              ${cfg.preRefuseRules}
+              counter jump log-refuse
+            }
+          '';
+
+          firewallCfg = pkgs.writeText "rules.nft" ''
+            add table inet nixos-firewall
+            flush table inet nixos-firewall
+            delete table inet nixos-firewall
+
+            add table inet nixos-firewall {
+              comment "NixOS Firewall for IPv4/IPv6"
+            ${optionalString ((builtins.length cfg.sets) > 0) ''
+                      # defined sets
+              ${builtins.concatStringsSep "\n" cfg.sets}
+            ''}
+
+            # these two chains should not have dependencies
+            ${addChain allow}
+            ${addChain refuse}
+
+            # This chain depends on allow
+            ${addChain pre-allow}
+
+            # This chain depends on refuse
+            ${addChain log-refuse}
+
+            # This chain depends on refuse
+            ${addChain pre-refuse}
+
+            ${optionalString (kernelHasRPFilter && (cfg.checkReversePath != false))
+            (addChain rpfilter)}
+            ${addChain core}
+
+            };
+
+            # networking.firewall.extraRules {
+
+            ${cfg.extraRules}
+
+            # } // networking.firewall.extraRules
+          '';
+
+          startScript = writeShScript "firewall-start" ''
+            # nixos firewall start script
+            nft -f ${firewallCfg}
+
+            # networking.firewall.extraCommands
+            ${cfg.extraCommands}
+          '';
+
+          reloadScript = writeShScript "firewall-reload" ''
+            # nixos firewall reload script
+
+            # The -c will dry run the new config and complain if there are any
+            # issues.
+            if ! nft -c -f ${firewallCfg}; then
+              echo "The Firewall config has issues. Refusing to reload"
+              exit 1
+            fi
+
+            # since extraStopCommands needs to run here, we will first nuke the
+            # firewall, and start dropping packets. This is to prevent any packets
+            # that would have otherwise been dropped from reaching the system while
+            # `extraStopCommands` are running. We do not have to do any cleanup on
+            # this as the firewall will nuke the the nixos-firewall table if it exists on
+            # startup
+
+            # TODO: inet support please
+
+            nft -f - <<EOF
+              add table inet nixos-firewall
+              flush table inet nixos-firewall
+              delete table inet nixos-firewall
+
+              table inet nixos-firewall {
+                chain temp {
+                  # TODO: 
+                  type filter hook input priority filter; policy accept;
+
+                  # Allow already established connections through
+                  ct state established,related accept
+               
+                  # Drop everything else
+                  drop
+                }
+              }
+            EOF
+
+            # networking.firewall.extraCommands
+            ${cfg.extraStopCommands}
+
+            if ! ${startScript}; then
+              echo "Failed to reload firewall... Stopping"
+              ${stopScript}
+              exit 1
+            fi
+          '';
+
+          stopScript = writeShScript "firewall-stop" ''
 
         nft -f - <<EOF
           add table inet nixos-firewall
@@ -755,34 +762,35 @@ in {
         ${cfg.extraStopCommands}
       '';
 
-    in {
-      description = "Firewall";
-      wantedBy = [ "sysinit.target" ];
-      wants = [ "network-pre.target" ];
-      before = [ "network-pre.target" ];
-      after = [ "systemd-modules-load.service" ];
+        in
+        {
+          description = "Firewall";
+          wantedBy = [ "sysinit.target" ];
+          wants = [ "network-pre.target" ];
+          before = [ "network-pre.target" ];
+          after = [ "systemd-modules-load.service" ];
 
-      path = [ cfg.package ] ++ cfg.extraPackages;
+          path = [ cfg.package ] ++ cfg.extraPackages;
 
-      # FIXME: this module may also try to load kernel modules, but
-      # containers don't have CAP_SYS_MODULE.  So the host system had
-      # better have all necessary modules already loaded.
-      unitConfig.ConditionCapability = "CAP_NET_ADMIN";
-      unitConfig.DefaultDependencies = false;
+          # FIXME: this module may also try to load kernel modules, but
+          # containers don't have CAP_SYS_MODULE.  So the host system had
+          # better have all necessary modules already loaded.
+          unitConfig.ConditionCapability = "CAP_NET_ADMIN";
+          unitConfig.DefaultDependencies = false;
 
-      reloadIfChanged = true;
+          reloadIfChanged = true;
 
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        # the @ will make the the second specified token to be passed as "argv[0]" to the
-        # executed process (instead of the actual filename), followed by the
-        # further arguments specified.
-        ExecStart = "@${startScript} firewall-start";
-        ExecReload = "@${reloadScript} firewall-reload";
-        ExecStop = "@${stopScript} firewall-stop";
-      };
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            # the @ will make the the second specified token to be passed as "argv[0]" to the
+            # executed process (instead of the actual filename), followed by the
+            # further arguments specified.
+            ExecStart = "@${startScript} firewall-start";
+            ExecReload = "@${reloadScript} firewall-reload";
+            ExecStop = "@${stopScript} firewall-stop";
+          };
+        };
+
     };
-
-  };
 }
