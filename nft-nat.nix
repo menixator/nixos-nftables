@@ -196,7 +196,7 @@ in {
     # actually a 32bit but it can overrun into other hooks so
     networking.nat.priorityOffset = mkOption {
       type = types.ints.s8;
-      default = 1;
+      default = 0;
       description = ''
         An nft priority expression which will be used for the rpfilter base chain
         You may use any nft priority expression that's valid in the `input` hook.
@@ -267,10 +267,19 @@ in {
     systemd.services.nat = let
       mark =  (toString config.networking.nat.mark);
 
-      priorityOffset = if cfg.priorityOffset > 0 then
-        "+${builtins.toString cfg.priorityOffset}"
-      else
-        "-${builtins.toString cfg.priorityOffset}";
+      # startingPriority can be a string or a number
+      reducePriority = startingPriority: offset:
+        let signedStringify = int: 
+          if int > 0 then "+${toString int}"
+          else toString int;
+          
+        in
+        if offset == 0 then toString startingPriority else
+          if typeOf startingPriority == "string" then 
+            "${startingPriority}${signedStringify offset}"
+            else 
+              "${ toString (startingPriority + offset)}";
+      
 
       natStartRules = pkgs.writeText "nixos-nat-start.nft" ''
           add table inet nixos-nat
@@ -279,10 +288,10 @@ in {
 
           table inet nixos-nat {
 
-            chain prerouting	{ type nat hook prerouting priority dstnat${priorityOffset}; }
-            chain input		{ type nat hook input priority 100${priorityOffset}; }
-            chain output		{ type nat hook output priority -100${priorityOffset}; }
-            chain postrouting	{ type nat hook postrouting priority srcnat${priorityOffset}; }
+            chain prerouting	{ type nat hook prerouting priority ${reducePriority "dstnat" cfg.priorityOffset}; }
+            chain input		{ type nat hook input priority ${reducePriority 100 cfg.priorityOffset}; }
+            chain output		{ type nat hook output priority ${reducePriority -100 cfg.priorityOffset}; }
+            chain postrouting	{ type nat hook postrouting priority ${reducePriority "srcnat" cfg.priorityOffset}; }
 
             chain nixos-nat-pre {
               # We can't match on incoming interface in POSTROUTING, so
