@@ -193,6 +193,17 @@ in {
       '';
     };
 
+    # actually a 32bit but it can overrun into other hooks so
+    networking.nat.priorityOffset = mkOption {
+      type = types.ints.s8;
+      default = 1;
+      description = ''
+        An nft priority expression which will be used for the rpfilter base chain
+        You may use any nft priority expression that's valid in the `input` hook.
+        https://wiki.nftables.org/wiki-nftables/index.php/Netfilter_hooks#Priority_within_hook
+      '';
+    };
+
     networking.nat.extraCommands = mkOption {
       type = types.lines;
       default = "";
@@ -255,6 +266,12 @@ in {
     # TODO: priority offsets
     systemd.services.nat = let
       mark =  (toString config.networking.nat.mark);
+
+      priorityOffset = if cfg.priorityOffset > 0 then
+        "+${builtins.toString cfg.priorityOffset}"
+      else
+        "-${builtins.toString cfg.priorityOffset}";
+
       natStartRules = pkgs.writeText "nixos-nat-start.nft" ''
           add table inet nixos-nat
           flush table inet nixos-nat
@@ -262,10 +279,10 @@ in {
 
           table inet nixos-nat {
 
-            chain prerouting	{ type nat hook prerouting priority dstnat; }
-            chain input		{ type nat hook input priority 100; }
-            chain output		{ type nat hook output priority -100; }
-            chain postrouting	{ type nat hook postrouting priority srcnat; }
+            chain prerouting	{ type nat hook prerouting priority dstnat${priorityOffset}; }
+            chain input		{ type nat hook input priority 100${priorityOffset}; }
+            chain output		{ type nat hook output priority -100${priorityOffset}; }
+            chain postrouting	{ type nat hook postrouting priority srcnat${priorityOffset}; }
 
             chain nixos-nat-pre {
               # We can't match on incoming interface in POSTROUTING, so
