@@ -279,7 +279,7 @@ in
 
           in
           if offset == 0 then toString startingPriority else
-          if typeOf startingPriority == "string" then
+          if builtins.typeOf startingPriority == "string" then
             "${startingPriority}${signedStringify offset}"
           else
             "${ toString (startingPriority + offset)}";
