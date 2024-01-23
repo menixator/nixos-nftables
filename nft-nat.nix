@@ -183,6 +183,16 @@ in {
       '';
     };
 
+
+    networking.nat.mark = mkOption {
+      type = types.ints.u32;
+      default = 1;
+      example = "1";
+      description = lib.mdDoc ''
+        The mark used for natting
+      '';
+    };
+
     networking.nat.extraCommands = mkOption {
       type = types.lines;
       default = "";
@@ -244,6 +254,7 @@ in {
 
     # TODO: priority offsets
     systemd.services.nat = let
+      mark =  (toString config.networking.nat.mark);
       natStartRules = pkgs.writeText "nixos-nat-start.nft" ''
           add table inet nixos-nat
           flush table inet nixos-nat
@@ -261,7 +272,7 @@ in {
               # mark packets coming from the internal interfaces.
               ${
                 concatMapStrings (iface: ''
-                  iifname "${iface}" counter meta mark set 1
+                  iifname "${iface}" counter meta mark set ${mark}
                 '') cfg.internalInterfaces
               }
             }
@@ -270,7 +281,7 @@ in {
               # NAT the marked packets.
               ${
                 optionalString (cfg.internalInterfaces != [ ]) ''
-                  ${oifExternal} meta mark 1 counter ${dest}
+                  ${oifExternal} meta mark ${mark} counter ${dest}
                 ''
               }
 
