@@ -294,7 +294,7 @@ in
 
               chain prerouting	{ type nat hook prerouting priority ${reducePriority "dstnat" cfg.priorityOffset}; }
               chain input		{ type nat hook input priority ${reducePriority 100 cfg.priorityOffset}; }
-              chain output		{ type nat hook output priority ${reducePriority -100 cfg.priorityOffset}; }
+              chain output		{ type nat hook output priority ${reducePriority (-100) cfg.priorityOffset}; }
               chain postrouting	{ type nat hook postrouting priority ${reducePriority "srcnat" cfg.priorityOffset}; }
 
               chain nixos-nat-pre {
